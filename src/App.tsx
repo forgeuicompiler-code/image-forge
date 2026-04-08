@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Search, Image as ImageIcon, ShieldCheck, Zap, Info, ExternalLink, RefreshCw } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -24,9 +24,14 @@ export default function App() {
   const [uiRole, setUiRole] = useState("hero");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ForgeResponse | null>(null);
+  
+  // Race condition protection
+  const requestId = useRef(0);
 
   const resolveImage = async () => {
+    const id = ++requestId.current;
     setLoading(true);
+    
     try {
       const response = await fetch("/api/images/resolve", {
         method: "POST",
@@ -45,11 +50,19 @@ export default function App() {
         }),
       });
       const data = await response.json();
-      setResult(data);
+      
+      // Only update state if this is still the latest request
+      if (id === requestId.current) {
+        setResult(data);
+      }
     } catch (error) {
-      console.error("Error resolving image:", error);
+      if (id === requestId.current) {
+        console.error("Error resolving image:", error);
+      }
     } finally {
-      setLoading(false);
+      if (id === requestId.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -189,7 +202,13 @@ export default function App() {
                     animate={{ opacity: 1, scale: 1 }}
                     className="w-full h-full flex flex-col items-center justify-center gap-6"
                   >
-                    <div className={`relative group ${uiRole === 'avatar' ? 'w-64 h-64 rounded-full' : 'w-full max-w-2xl aspect-video rounded-2xl'} overflow-hidden border border-white/10 shadow-2xl`}>
+                    <div className={`relative group overflow-hidden border border-white/10 shadow-2xl ${
+                      uiRole === 'avatar' 
+                        ? 'w-64 h-64 rounded-full' 
+                        : uiRole === 'hero'
+                          ? 'w-full max-w-2xl aspect-video rounded-2xl'
+                          : 'w-full max-w-md aspect-square rounded-2xl'
+                    }`}>
                       <img 
                         src={result.url} 
                         alt={result.metadata.alt_text}
