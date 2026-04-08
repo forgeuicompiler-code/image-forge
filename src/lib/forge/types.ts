@@ -48,5 +48,20 @@ export interface ResolveImageResponse {
     fallback_applied: boolean;
     confidence_level?: "high" | "medium" | "low";
     reason?: string;
+    fallback_type?: "low_confidence" | "low_margin" | "no_candidates";
+    margin?: number;
+    variance?: number;
+    contribution?: {
+      semantic: number;
+      visual: number;
+      quality: number;
+    };
+    trace?: {
+      queries: string[];
+      candidate_count: number;
+      top_scores: number[];
+      decision: string;
+    };
   };
+  candidates?: CandidateImage[];
 }

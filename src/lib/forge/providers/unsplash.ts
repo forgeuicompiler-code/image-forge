@@ -42,18 +42,53 @@ export async function searchUnsplash(query: string): Promise<CandidateImage[]> {
 }
 
 function getMockData(query: string): CandidateImage[] {
-  // Return some picsum images as mock candidates
-  return Array.from({ length: 5 }).map((_, i) => ({
-    id: `mock-${i}`,
+  const queryLower = query.toLowerCase();
+  
+  // Controlled Simulation Scenarios
+  const scenarios = [
+    {
+      id: "sim-1",
+      description: `${query} - high quality studio shot centered`,
+      likes: 150,
+      quality_boost: 1.2
+    },
+    {
+      id: "sim-2",
+      description: `${query} - wide cinematic landscape minimal`,
+      likes: 80,
+      quality_boost: 1.0
+    },
+    {
+      id: "sim-3",
+      description: `${query} - portrait headshot bokeh`,
+      likes: 45,
+      quality_boost: 0.8
+    },
+    {
+      id: "sim-4",
+      description: `${query} - abstract texture pattern`,
+      likes: 20,
+      quality_boost: 0.5
+    },
+    {
+      id: "sim-5",
+      description: `Irrelevant object unrelated to ${query}`,
+      likes: 10,
+      quality_boost: 0.3
+    }
+  ];
+
+  return scenarios.map((s, i) => ({
+    id: s.id,
     url: `https://picsum.photos/seed/${query.replace(/\s/g, "")}-${i}/800/600`,
     width: 800,
     height: 600,
-    likes: 10 + i * 5,
-    description: `Mock image for ${query}`,
-    source: "mock",
+    likes: s.likes,
+    description: s.description,
+    source: "mock_simulator",
     attribution: {
-      photographer: "Mock Photographer",
-      service: "Mock Service",
+      photographer: `Simulator Agent ${i}`,
+      service: "Forge Mock Engine",
       license_url: "#",
     },
   }));

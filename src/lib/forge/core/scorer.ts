@@ -13,32 +13,50 @@ const SYNONYMS: Record<string, string[]> = {
   "avatar": ["profile", "portrait", "user", "person"],
 };
 
+export interface ScoredCandidate extends CandidateImage {
+  score: number;
+  breakdown: {
+    semantic: number;
+    visual: number;
+    quality: number;
+  };
+}
+
 export function scoreCandidates(
   candidates: CandidateImage[],
   context: ImageContext,
   constraints: ImageConstraints
-): CandidateImage[] {
+): ScoredCandidate[] {
   return candidates.map((c) => {
-    const semantic = calculateSemanticScore(c, context);
-    const visual = calculateVisualScore(c, context, constraints);
-    const quality = calculateQualityScore(c);
+    const semantic = Math.max(0, Math.min(1, calculateSemanticScore(c, context)));
+    const visual = Math.max(0, Math.min(1, calculateVisualScore(c, context, constraints)));
+    const quality = Math.max(0, Math.min(1, calculateQualityScore(c)));
 
     const weights = getWeights(context.ui_role);
 
-    let score =
-      weights.semantic * semantic +
-      weights.visual * visual +
-      weights.quality * quality;
+    const weightedSemantic = weights.semantic * semantic;
+    const weightedVisual = weights.visual * visual;
+    const weightedQuality = weights.quality * quality;
+
+    let score = weightedSemantic + weightedVisual + weightedQuality;
 
     // Hard Brand Override
     if (context.brand && containsCompetingBrand(c, context.brand)) {
       score = 0;
     }
 
-    // Clamp
+    // Clamp final score
     score = Math.max(0, Math.min(1, score));
 
-    return { ...c, score };
+    return { 
+      ...c, 
+      score,
+      breakdown: {
+        semantic: weightedSemantic,
+        visual: weightedVisual,
+        quality: weightedQuality
+      }
+    };
   });
 }
 
@@ -90,6 +108,9 @@ function calculateSemanticScore(c: CandidateImage, context: ImageContext): numbe
 }
 
 function calculateVisualScore(c: CandidateImage, context: ImageContext, constraints: ImageConstraints): number {
+  // Grouped Visual Fit: f(aspect_ratio, composition, role_alignment)
+  
+  // 1. Aspect Ratio Fit
   let arScore = 1;
   if (constraints.aspect_ratio) {
     const [targetW, targetH] = constraints.aspect_ratio.split(":").map(Number);
@@ -98,14 +119,14 @@ function calculateVisualScore(c: CandidateImage, context: ImageContext, constrai
     arScore = 1 - Math.min(1, Math.abs(actualAR - targetAR) / targetAR);
   }
 
-  // Composition Signal Strength
+  // 2. Composition & Role Alignment
   const text = c.description.toLowerCase();
   let compScore = 0.5;
   const signals = {
-    hero: ["copy space", "minimal", "wide", "cinematic"],
-    product: ["white background", "studio", "centered", "isolated"],
-    avatar: ["portrait", "headshot", "bokeh", "natural"],
-    background: ["abstract", "texture", "pattern", "ambient"]
+    hero: ["copy space", "minimal", "wide", "cinematic", "landscape"],
+    product: ["white background", "studio", "centered", "isolated", "clean"],
+    avatar: ["portrait", "headshot", "bokeh", "natural", "face"],
+    background: ["abstract", "texture", "pattern", "ambient", "blurred"]
   };
 
   const roleSignals = signals[context.ui_role as keyof typeof signals] || [];
@@ -114,8 +135,9 @@ function calculateVisualScore(c: CandidateImage, context: ImageContext, constrai
     compScore = matches / roleSignals.length;
   }
 
-  const score = 0.4 * arScore + 0.6 * compScore;
-  return Math.max(0, Math.min(1, score));
+  // Weighted Visual Fit
+  const visualFit = 0.4 * arScore + 0.6 * compScore;
+  return Math.max(0, Math.min(1, visualFit));
 }
 
 function calculateQualityScore(c: CandidateImage): number {
@@ -131,18 +153,36 @@ function calculateQualityScore(c: CandidateImage): number {
 }
 
 function getWeights(role: UIRole) {
+  let weights;
   switch (role) {
-    case "product": return { semantic: 0.6, visual: 0.3, quality: 0.1 };
-    case "hero": return { semantic: 0.3, visual: 0.6, quality: 0.1 };
-    case "avatar": return { semantic: 0.4, visual: 0.4, quality: 0.2 };
-    case "background": return { semantic: 0.1, visual: 0.7, quality: 0.2 };
-    default: return { semantic: 0.4, visual: 0.4, quality: 0.2 };
+    case "product": weights = { semantic: 0.6, visual: 0.3, quality: 0.1 }; break;
+    case "hero": weights = { semantic: 0.3, visual: 0.6, quality: 0.1 }; break;
+    case "avatar": weights = { semantic: 0.4, visual: 0.4, quality: 0.2 }; break;
+    case "background": weights = { semantic: 0.1, visual: 0.7, quality: 0.2 }; break;
+    default: weights = { semantic: 0.4, visual: 0.4, quality: 0.2 }; break;
   }
+
+  // Ensure normalization (sum = 1)
+  const total = weights.semantic + weights.visual + weights.quality;
+  return {
+    semantic: weights.semantic / total,
+    visual: weights.visual / total,
+    quality: weights.quality / total
+  };
 }
+
+const COMPETING_BRANDS: Record<string, string[]> = {
+  "nike": ["adidas", "puma", "reebok", "under armour", "asics", "new balance"],
+  "adidas": ["nike", "puma", "reebok", "under armour", "asics", "new balance"],
+  "apple": ["samsung", "google", "microsoft", "huawei", "xiaomi"],
+  "tesla": ["ford", "gm", "toyota", "honda", "bmw", "mercedes"],
+};
 
 function containsCompetingBrand(c: CandidateImage, brand: string): boolean {
   const text = c.description.toLowerCase();
-  // This would ideally be a list of known competitors
-  const competitors = ["adidas", "nike", "puma", "reebok", "under armour"].filter(b => b !== brand.toLowerCase());
+  const brandLower = brand.toLowerCase();
+  const competitors = COMPETING_BRANDS[brandLower] || 
+    Object.keys(COMPETING_BRANDS).filter(b => b !== brandLower);
+    
   return competitors.some(comp => text.includes(comp));
 }

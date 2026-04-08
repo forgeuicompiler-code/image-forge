@@ -1,0 +1,117 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: traces
+// Document ID: traceId (UUID)
+// Fields:
+//   - id: string (required)
+//   - timestamp: string (required, ISO 8601)
+//   - context: map (required)
+//   - candidates: list (optional)
+//   - selected_url: string (required)
+//   - ai_tags: map (optional)
+//   - decision: string (optional)
+//   - reason: string (optional)
+//   - margin: number (optional)
+//   - variance: number (optional)
+//
+// Collection: verifications
+// Document ID: verificationId (UUID)
+// Fields:
+//   - trace_id: string (required)
+//   - timestamp: string (required, ISO 8601)
+//   - user_email: string (optional)
+//   - labels: map (required)
+//     - subject_correct: bool
+//     - brand_correct: bool
+//     - composition_correct: bool
+//     - ui_fit_correct: bool
+//     - notes: string
+//   - disagreement: bool (optional)
+//   - uid: string (required) - Owner UID
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.uid;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "forgeuicompiler@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string &&
+        dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidTrace(data) {
+      return data.keys().hasAll(['id', 'timestamp', 'context', 'selected_url']) &&
+             data.id is string &&
+             isValidDateString(data.timestamp) &&
+             data.context is map &&
+             data.selected_url is string;
+    }
+
+    function isValidVerification(data) {
+      return data.keys().hasAll(['trace_id', 'timestamp', 'labels', 'uid']) &&
+             data.trace_id is string &&
+             isValidDateString(data.timestamp) &&
+             data.labels is map &&
+             data.uid == request.auth.uid;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /traces/{traceId} {
+      // Traces are system-generated but readable by authenticated users for verification
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidTrace(request.resource.data);
+      allow update, delete: if isAdmin();
+    }
+
+    match /verifications/{verificationId} {
+      // Users can only manage their own verifications
+      allow read: if isAuthenticated() && (isDocOwner() || isAdmin());
+      allow create: if isAuthenticated() && isValidVerification(request.resource.data);
+      allow update: if isAuthenticated() && isDocOwner() && isValidVerification(request.resource.data) &&
+                      request.resource.data.trace_id == resource.data.trace_id;
+      allow delete: if isAdmin();
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create, update: if isAdmin();
+    }
+
+    // Default deny
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}

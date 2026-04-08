@@ -16,10 +16,14 @@ export function parseContext(input: any): ImageContext {
   };
 
   // Basic lemmatization (MVP: just plural to singular for common cases)
-  if (context.subject.endsWith("s") && context.subject.length > 3) {
-    // Very naive but fits MVP scope
-    // context.subject = context.subject.slice(0, -1); 
-  }
+  const lemmatize = (word: string) => {
+    if (word.endsWith("ies")) return word.slice(0, -3) + "y";
+    if (word.endsWith("es") && !word.endsWith("ees")) return word.slice(0, -2);
+    if (word.endsWith("s") && !word.endsWith("ss")) return word.slice(0, -1);
+    return word;
+  };
+
+  context.subject = context.subject.split(" ").map(lemmatize).join(" ");
 
   return context;
 }

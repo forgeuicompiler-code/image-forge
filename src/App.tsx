@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef } from "react";
-import { Search, Image as ImageIcon, ShieldCheck, Zap, Info, ExternalLink, RefreshCw, BarChart3, CheckCircle2, AlertCircle, Target } from "lucide-react";
+import { Search, Image as ImageIcon, ShieldCheck, Zap, Info, ExternalLink, RefreshCw, BarChart3, CheckCircle2, AlertCircle, Target, Check, X, MessageSquare, LogIn, LogOut, User as UserIcon } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { auth, signInWithGoogle, signOut } from "./lib/firebase";
+import { onAuthStateChanged, User } from "firebase/auth";
+import { tagCandidate, logTrace } from "./services/taggingService";
+import { fetchTraces, saveVerification, VerificationLabels } from "./services/verificationService";
 
 interface ForgeResponse {
   url: string;
@@ -30,20 +34,38 @@ interface EvaluationResult {
   trait_accuracy: number;
   is_brand_safe: boolean;
   url: string;
+  failure_mode: string;
+  recommended_fix: string;
+  is_near_miss: boolean;
+  near_miss_type: string;
+  is_test_set: boolean;
+  top_k_accuracy: {
+    top1: boolean;
+    top3: boolean;
+    top5: boolean;
+  };
+  loss: number;
 }
 
 interface EvaluationData {
   results: EvaluationResult[];
   metrics: {
     overall_accuracy: number;
-    accuracy_by_confidence: Record<string, number>;
+    train_accuracy: number;
+    test_accuracy: number;
+    accuracy_by_confidence: Record<string, { accuracy: number; count: number }>;
     brand_safety_rate: number;
     avg_score: number;
+    retrieval_health: number;
+    ranking_efficiency: number;
+    failure_modes: Record<string, number>;
+    expected_loss: number;
   };
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<"playground" | "evaluation">("playground");
+  const [activeTab, setActiveTab] = useState<"playground" | "evaluation" | "verification">("playground");
+  const [user, setUser] = useState<User | null>(null);
   const [subject, setSubject] = useState("Nike running shoes");
   const [brand, setBrand] = useState("Nike");
   const [uiRole, setUiRole] = useState("hero");
@@ -55,6 +77,13 @@ export default function App() {
 
   // Race condition protection
   const requestId = useRef(0);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+    });
+    return () => unsubscribe();
+  }, []);
 
   const resolveImage = async () => {
     const id = ++requestId.current;
@@ -83,6 +112,35 @@ export default function App() {
       // Only update state if this is still the latest request
       if (id === requestId.current) {
         setResult(data);
+
+        // AI Tagging & Logging (Frontend)
+        if (user) {
+          const traceId = `trace-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+          if (!data.metadata.fallback_applied && data.candidates?.[0]) {
+            tagCandidate(data.candidates[0].description).then(tags => {
+              logTrace({
+                id: traceId,
+                context: { subject, brand, ui_role: uiRole },
+                selected_url: data.url,
+                ai_tags: tags,
+                decision: "direct_match",
+                margin: data.metadata.margin,
+                variance: data.metadata.variance,
+                candidates: data.candidates.slice(0, 3).map((c: any) => ({ id: c.id, score: c.score, description: c.description }))
+              });
+            });
+          } else {
+            logTrace({
+              id: traceId,
+              context: { subject, brand, ui_role: uiRole },
+              selected_url: data.url,
+              decision: "fallback",
+              reason: data.metadata.reason,
+              margin: data.metadata.margin,
+              variance: data.metadata.variance
+            });
+          }
+        }
       }
     } catch (error) {
       if (id === requestId.current) {
@@ -103,6 +161,20 @@ export default function App() {
       setEvalData(data);
     } catch (error) {
       console.error("Error running evaluation:", error);
+    } finally {
+      setEvalLoading(false);
+    }
+  };
+
+  const tuneWeights = async () => {
+    setEvalLoading(true);
+    try {
+      const response = await fetch("/api/evaluation/tune", { method: "POST" });
+      const data = await response.json();
+      alert(`Optimization Complete!\nBest Weights: Semantic ${data.best_weights.semantic}, Visual ${data.best_weights.visual}, Quality ${data.best_weights.quality}\nEstimated Improvement: +${(data.improvement * 100).toFixed(1)}%`);
+      runEvaluation(); // Refresh metrics
+    } catch (error) {
+      console.error("Error tuning weights:", error);
     } finally {
       setEvalLoading(false);
     }
@@ -142,11 +214,38 @@ export default function App() {
             >
               Evaluation
             </button>
+            <button 
+              onClick={() => setActiveTab("verification")}
+              className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${activeTab === "verification" ? "bg-white text-black" : "text-white/40 hover:text-white"}`}
+            >
+              Verification
+            </button>
           </div>
 
-          <div className="hidden md:flex items-center gap-6 text-sm text-white/60">
-            <span className="flex items-center gap-2"><ShieldCheck size={16} /> Brand Safe</span>
-            <span className="flex items-center gap-2"><Zap size={16} /> Deterministic</span>
+          <div className="flex items-center gap-4">
+            {user ? (
+              <div className="flex items-center gap-3">
+                <div className="text-right hidden sm:block">
+                  <p className="text-[10px] font-bold uppercase text-white/40 leading-none">Logged in as</p>
+                  <p className="text-xs font-medium">{user.email}</p>
+                </div>
+                <button 
+                  onClick={() => signOut()}
+                  className="w-10 h-10 rounded-full bg-white/5 border border-white/10 flex items-center justify-center hover:bg-white/10 transition-colors"
+                  title="Sign Out"
+                >
+                  <LogOut size={18} className="text-white/60" />
+                </button>
+              </div>
+            ) : (
+              <button 
+                onClick={() => signInWithGoogle()}
+                className="flex items-center gap-2 bg-white text-black px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-orange-500 transition-colors"
+              >
+                <LogIn size={16} />
+                Sign In
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -299,20 +398,36 @@ export default function App() {
               </div>
 
               {/* Metadata Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <div className="bg-white/5 border border-white/10 rounded-xl p-4">
                   <p className="text-[10px] font-bold text-white/30 uppercase mb-1">Match Level</p>
                   <p className="text-sm font-medium capitalize">{result?.match_level || "---"}</p>
                 </div>
                 <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-                  <p className="text-[10px] font-bold text-white/30 uppercase mb-1">Alt Text</p>
-                  <p className="text-sm font-medium truncate">{result?.metadata.alt_text || "---"}</p>
+                  <p className="text-[10px] font-bold text-white/30 uppercase mb-1">Margin</p>
+                  <p className="text-sm font-mono">{result?.metadata.margin !== undefined ? `${(result.metadata.margin * 100).toFixed(1)}%` : "---"}</p>
                 </div>
                 <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-                  <p className="text-[10px] font-bold text-white/30 uppercase mb-1">System Status</p>
-                  <p className="text-sm font-medium text-green-500 flex items-center gap-2">
-                    <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse inline-block" />
-                    Operational
+                  <p className="text-[10px] font-bold text-white/30 uppercase mb-1">Contribution</p>
+                  <div className="flex gap-2 mt-1">
+                    {result?.metadata.contribution ? (
+                      <>
+                        <span className="text-[9px] bg-white/10 px-1 rounded" title="Semantic">S: {(result.metadata.contribution.semantic * 100).toFixed(0)}%</span>
+                        <span className="text-[9px] bg-white/10 px-1 rounded" title="Visual">V: {(result.metadata.contribution.visual * 100).toFixed(0)}%</span>
+                        <span className="text-[9px] bg-white/10 px-1 rounded" title="Quality">Q: {(result.metadata.contribution.quality * 100).toFixed(0)}%</span>
+                      </>
+                    ) : "---"}
+                  </div>
+                </div>
+                <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                  <p className="text-[10px] font-bold text-white/30 uppercase mb-1">
+                    {result?.metadata.fallback_applied ? "Fallback Reason" : "Confidence"}
+                  </p>
+                  <p className={`text-sm font-medium ${result?.metadata.fallback_applied ? "text-orange-400" : "text-green-500"}`}>
+                    {result?.metadata.fallback_applied 
+                      ? (result.metadata.reason?.replace("_", " ") || "low signal")
+                      : `${(result?.confidence * 100).toFixed(1)}%`
+                    }
                   </p>
                 </div>
               </div>
@@ -325,39 +440,106 @@ export default function App() {
                 <h2 className="text-2xl font-bold">Evaluation Dashboard</h2>
                 <p className="text-white/40 text-sm">Quantifying ranking quality across the Golden Dataset.</p>
               </div>
-              <button 
-                onClick={runEvaluation}
-                disabled={evalLoading}
-                className="bg-orange-500 text-black font-bold px-6 py-3 rounded-xl flex items-center gap-2 hover:bg-orange-400 transition-all disabled:opacity-50"
-              >
-                {evalLoading ? <RefreshCw className="animate-spin" size={18} /> : <Target size={18} />}
-                Run Evaluation
-              </button>
+              <div className="flex items-center gap-3">
+                <button 
+                  onClick={tuneWeights}
+                  disabled={evalLoading}
+                  className="bg-white/5 text-white/60 font-bold px-6 py-3 rounded-xl flex items-center gap-2 hover:bg-white/10 transition-all disabled:opacity-50 border border-white/10"
+                >
+                  {evalLoading ? <RefreshCw className="animate-spin" size={18} /> : <Zap size={18} />}
+                  Auto-Tune Weights
+                </button>
+                <button 
+                  onClick={runEvaluation}
+                  disabled={evalLoading}
+                  className="bg-orange-500 text-black font-bold px-6 py-3 rounded-xl flex items-center gap-2 hover:bg-orange-400 transition-all disabled:opacity-50"
+                >
+                  {evalLoading ? <RefreshCw className="animate-spin" size={18} /> : <Target size={18} />}
+                  Run Evaluation
+                </button>
+              </div>
             </div>
 
             {evalData ? (
               <div className="space-y-8">
                 {/* Metrics Grid */}
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                   <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
                     <BarChart3 className="text-orange-500 mb-4" size={24} />
                     <p className="text-[10px] font-bold text-white/30 uppercase mb-1">Overall Accuracy</p>
-                    <p className="text-3xl font-bold">{(evalData.metrics.overall_accuracy * 100).toFixed(1)}%</p>
+                    <div className="flex items-baseline gap-2">
+                      <p className="text-3xl font-bold">{(evalData.metrics.overall_accuracy * 100).toFixed(1)}%</p>
+                      <p className="text-[10px] text-white/40">Test: {(evalData.metrics.test_accuracy * 100).toFixed(0)}%</p>
+                    </div>
+                  </div>
+                  <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
+                    <AlertCircle className="text-red-500 mb-4" size={24} />
+                    <p className="text-[10px] font-bold text-white/30 uppercase mb-1">Expected Loss</p>
+                    <p className="text-3xl font-bold">{evalData.metrics.expected_loss.toFixed(2)}</p>
                   </div>
                   <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
                     <ShieldCheck className="text-green-500 mb-4" size={24} />
-                    <p className="text-[10px] font-bold text-white/30 uppercase mb-1">Brand Safety</p>
-                    <p className="text-3xl font-bold">{(evalData.metrics.brand_safety_rate * 100).toFixed(1)}%</p>
+                    <p className="text-[10px] font-bold text-white/30 uppercase mb-1">Retrieval Health</p>
+                    <p className="text-3xl font-bold">{(evalData.metrics.retrieval_health * 100).toFixed(1)}%</p>
                   </div>
                   <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
                     <Target className="text-blue-500 mb-4" size={24} />
-                    <p className="text-[10px] font-bold text-white/30 uppercase mb-1">Avg Score</p>
-                    <p className="text-3xl font-bold">{(evalData.metrics.avg_score * 100).toFixed(1)}%</p>
+                    <p className="text-[10px] font-bold text-white/30 uppercase mb-1">Ranking Efficiency</p>
+                    <p className="text-3xl font-bold">{(evalData.metrics.ranking_efficiency * 100).toFixed(1)}%</p>
                   </div>
                   <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
                     <CheckCircle2 className="text-purple-500 mb-4" size={24} />
                     <p className="text-[10px] font-bold text-white/30 uppercase mb-1">High Conf Accuracy</p>
-                    <p className="text-3xl font-bold">{(evalData.metrics.accuracy_by_confidence.high * 100).toFixed(1)}%</p>
+                    <p className="text-3xl font-bold">{(evalData.metrics.accuracy_by_confidence.high.accuracy * 100).toFixed(1)}%</p>
+                  </div>
+                </div>
+
+                {/* Secondary Metrics */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                  {/* Failure Modes */}
+                  <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
+                    <h3 className="text-sm font-bold uppercase tracking-wider text-white/40 mb-6 flex items-center gap-2">
+                      <AlertCircle size={14} /> Failure Mode Breakdown
+                    </h3>
+                    <div className="space-y-4">
+                      {Object.entries(evalData.metrics.failure_modes).map(([mode, count]) => (
+                        <div key={mode} className="flex items-center justify-between">
+                          <span className="text-sm text-white/60 capitalize">{mode.replace("_", " ")}</span>
+                          <div className="flex items-center gap-3">
+                            <div className="w-32 bg-white/5 h-1.5 rounded-full overflow-hidden">
+                              <div 
+                                className="bg-orange-500 h-full" 
+                                style={{ width: `${((count as number) / evalData.results.length) * 100}%` }} 
+                              />
+                            </div>
+                            <span className="text-xs font-mono w-8 text-right">{count as number}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Calibration Table */}
+                  <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
+                    <h3 className="text-sm font-bold uppercase tracking-wider text-white/40 mb-6 flex items-center gap-2">
+                      <Target size={14} /> Confidence Calibration
+                    </h3>
+                    <div className="space-y-4">
+                      {Object.entries(evalData.metrics.accuracy_by_confidence).map(([bucket, data]) => {
+                        const d = data as { accuracy: number; count: number };
+                        return (
+                          <div key={bucket} className="flex items-center justify-between">
+                            <span className="text-sm text-white/60 capitalize">{bucket}</span>
+                            <div className="flex items-center gap-4">
+                              <span className="text-xs text-white/30">{d.count} samples</span>
+                              <span className={`text-sm font-bold ${d.accuracy > 0.8 ? 'text-green-500' : 'text-yellow-500'}`}>
+                                {(d.accuracy * 100).toFixed(0)}% Acc
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
 
@@ -369,7 +551,7 @@ export default function App() {
                         <th className="p-4 text-[10px] font-bold uppercase text-white/40">Test Case</th>
                         <th className="p-4 text-[10px] font-bold uppercase text-white/40">Confidence</th>
                         <th className="p-4 text-[10px] font-bold uppercase text-white/40">Accuracy</th>
-                        <th className="p-4 text-[10px] font-bold uppercase text-white/40">Traits Matched</th>
+                        <th className="p-4 text-[10px] font-bold uppercase text-white/40">Failure Mode / Fix</th>
                         <th className="p-4 text-[10px] font-bold uppercase text-white/40">Safety</th>
                         <th className="p-4 text-[10px] font-bold uppercase text-white/40">Visual</th>
                       </tr>
@@ -378,7 +560,15 @@ export default function App() {
                       {evalData.results.map((res) => (
                         <tr key={res.case_id} className="border-b border-white/5 hover:bg-white/2 transition-colors">
                           <td className="p-4">
-                            <p className="text-sm font-bold">{res.case_name}</p>
+                            <div className="flex items-center gap-2">
+                              <p className="text-sm font-bold">{res.case_name}</p>
+                              {res.is_test_set && <span className="text-[8px] bg-blue-500/20 text-blue-400 px-1 rounded">TEST</span>}
+                              {res.is_near_miss && (
+                                <span className="text-[8px] bg-yellow-500/20 text-yellow-400 px-1 rounded" title={res.near_miss_type}>
+                                  NEAR MISS
+                                </span>
+                              )}
+                            </div>
                             <p className="text-[10px] text-white/40 font-mono">{res.case_id}</p>
                           </td>
                           <td className="p-4">
@@ -393,10 +583,13 @@ export default function App() {
                             </div>
                           </td>
                           <td className="p-4">
-                            <div className="flex flex-wrap gap-1">
-                              {res.traits_matched.map(t => (
-                                <span key={t} className="px-1.5 py-0.5 bg-white/5 rounded text-[10px] text-white/60">{t}</span>
-                              ))}
+                            <div className="flex flex-col gap-1">
+                              <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded w-fit ${res.failure_mode === 'none' ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}`}>
+                                {res.failure_mode.replace("_", " ")}
+                              </span>
+                              {res.failure_mode !== 'none' && (
+                                <p className="text-[9px] text-white/40 italic">{res.recommended_fix}</p>
+                              )}
                             </div>
                           </td>
                           <td className="p-4">
@@ -419,7 +612,203 @@ export default function App() {
             )}
           </div>
         )}
+
+        {activeTab === "verification" && (
+          <VerificationTab user={user} />
+        )}
       </main>
+    </div>
+  );
+}
+
+function VerificationTab({ user }: { user: User | null }) {
+  const [traces, setTraces] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [labels, setLabels] = useState<VerificationLabels>({
+    subject_correct: true,
+    brand_correct: true,
+    composition_correct: true,
+    ui_fit_correct: true,
+    notes: ""
+  });
+
+  const loadTraces = async () => {
+    setLoading(true);
+    const data = await fetchTraces(20);
+    setTraces(data);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    loadTraces();
+  }, []);
+
+  const handleVerify = async (traceId: string) => {
+    if (!user) {
+      signInWithGoogle();
+      return;
+    }
+    await saveVerification(traceId, labels);
+    setVerifyingId(null);
+    loadTraces(); // Refresh
+  };
+
+  if (!user) {
+    return (
+      <div className="h-[60vh] flex flex-col items-center justify-center gap-6 text-center">
+        <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center">
+          <ShieldCheck size={32} className="text-white/20" />
+        </div>
+        <div className="space-y-2">
+          <h2 className="text-xl font-bold">Authentication Required</h2>
+          <p className="text-sm text-white/40 max-w-xs mx-auto">
+            You must be signed in to access the ground-truth verification engine.
+          </p>
+        </div>
+        <button 
+          onClick={() => signInWithGoogle()}
+          className="flex items-center gap-2 bg-white text-black px-6 py-3 rounded-xl text-sm font-bold uppercase tracking-wider hover:bg-orange-500 transition-all"
+        >
+          <LogIn size={18} />
+          Sign In with Google
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-8">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight">Verification Engine</h2>
+          <p className="text-sm text-white/40">Convert AI guesses into high-quality ground-truth labels.</p>
+        </div>
+        <button 
+          onClick={loadTraces}
+          className="p-2 hover:bg-white/5 rounded-lg transition-colors"
+          title="Refresh Traces"
+        >
+          <RefreshCw size={20} className={loading ? "animate-spin" : ""} />
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {[1, 2, 3, 4, 5, 6].map(i => (
+            <div key={i} className="h-64 bg-white/5 rounded-2xl animate-pulse" />
+          ))}
+        </div>
+      ) : traces.length === 0 ? (
+        <div className="h-[40vh] border-2 border-dashed border-white/10 rounded-2xl flex flex-col items-center justify-center gap-4 text-white/20">
+          <MessageSquare size={48} />
+          <p className="text-sm font-medium">No traces found. Run some resolutions in the Playground first.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {traces.map((trace) => (
+            <motion.div 
+              key={trace.id}
+              layout
+              className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden flex flex-col"
+            >
+              <div className="aspect-video relative group">
+                <img 
+                  src={trace.selected_url} 
+                  className="w-full h-full object-cover"
+                  referrerPolicy="no-referrer"
+                />
+                <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center p-4 text-center">
+                  <p className="text-xs font-medium">{trace.context.subject}</p>
+                </div>
+              </div>
+
+              <div className="p-4 space-y-4 flex-1">
+                <div className="flex items-center justify-between">
+                  <span className={`text-[9px] font-bold uppercase px-2 py-0.5 rounded ${trace.decision === 'direct_match' ? 'bg-green-500/20 text-green-500' : 'bg-orange-500/20 text-orange-500'}`}>
+                    {trace.decision.replace("_", " ")}
+                  </span>
+                  <span className="text-[9px] font-mono text-white/30">{new Date(trace.timestamp).toLocaleTimeString()}</span>
+                </div>
+
+                {trace.ai_tags && (
+                  <div className="space-y-2">
+                    <p className="text-[10px] font-bold text-white/30 uppercase">AI Guesses</p>
+                    <div className="flex flex-wrap gap-1">
+                      {trace.ai_tags.subject.map((s: string) => (
+                        <span key={s} className="text-[9px] bg-white/10 px-1.5 py-0.5 rounded">{s}</span>
+                      ))}
+                      {trace.ai_tags.brand && (
+                        <span className="text-[9px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded">{trace.ai_tags.brand}</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {verifyingId === trace.id ? (
+                  <div className="space-y-3 pt-2 border-t border-white/10">
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { key: 'subject_correct', label: 'Subject' },
+                        { key: 'brand_correct', label: 'Brand' },
+                        { key: 'composition_correct', label: 'Comp' },
+                        { key: 'ui_fit_correct', label: 'UI Fit' }
+                      ].map(item => (
+                        <button
+                          key={item.key}
+                          onClick={() => setLabels(prev => ({ ...prev, [item.key]: !prev[item.key as keyof VerificationLabels] }))}
+                          className={`flex items-center justify-between px-2 py-1.5 rounded-lg text-[10px] font-bold transition-colors ${labels[item.key as keyof VerificationLabels] ? 'bg-green-500/20 text-green-500' : 'bg-red-500/20 text-red-500'}`}
+                        >
+                          {item.label}
+                          {labels[item.key as keyof VerificationLabels] ? <Check size={12} /> : <X size={12} />}
+                        </button>
+                      ))}
+                    </div>
+                    <input 
+                      type="text"
+                      placeholder="Add notes..."
+                      value={labels.notes}
+                      onChange={(e) => setLabels(prev => ({ ...prev, notes: e.target.value }))}
+                      className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-[10px] focus:outline-none focus:border-white/30"
+                    />
+                    <div className="flex gap-2">
+                      <button 
+                        onClick={() => handleVerify(trace.id)}
+                        className="flex-1 bg-white text-black py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider hover:bg-orange-500 transition-colors"
+                      >
+                        Save Labels
+                      </button>
+                      <button 
+                        onClick={() => setVerifyingId(null)}
+                        className="px-3 py-2 bg-white/5 hover:bg-white/10 rounded-lg text-[10px] font-bold uppercase transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button 
+                    onClick={() => {
+                      setVerifyingId(trace.id);
+                      setLabels({
+                        subject_correct: true,
+                        brand_correct: true,
+                        composition_correct: true,
+                        ui_fit_correct: true,
+                        notes: ""
+                      });
+                    }}
+                    className="w-full mt-2 py-2 border border-white/10 rounded-xl text-[10px] font-bold uppercase tracking-wider hover:bg-white hover:text-black transition-all flex items-center justify-center gap-2"
+                  >
+                    <CheckCircle2 size={12} />
+                    Verify Result
+                  </button>
+                )}
+              </div>
+            </motion.div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

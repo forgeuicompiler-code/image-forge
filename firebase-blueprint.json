@@ -1,0 +1,54 @@
+{
+  "entities": {
+    "ImageTrace": {
+      "title": "Image Trace",
+      "description": "A log of a single image resolution attempt, including candidates and AI tags.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "context": { "type": "object" },
+        "candidates": { "type": "array" },
+        "selected_url": { "type": "string" },
+        "ai_tags": { "type": "object" },
+        "decision": { "type": "string" },
+        "reason": { "type": "string" },
+        "margin": { "type": "number" },
+        "variance": { "type": "number" }
+      },
+      "required": ["id", "timestamp", "context", "selected_url"]
+    },
+    "Verification": {
+      "title": "Verification",
+      "description": "Human-validated labels for a specific image trace.",
+      "type": "object",
+      "properties": {
+        "trace_id": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "user_email": { "type": "string" },
+        "labels": {
+          "type": "object",
+          "properties": {
+            "subject_correct": { "type": "boolean" },
+            "brand_correct": { "type": "boolean" },
+            "composition_correct": { "type": "boolean" },
+            "ui_fit_correct": { "type": "boolean" },
+            "notes": { "type": "string" }
+          }
+        },
+        "disagreement": { "type": "boolean" }
+      },
+      "required": ["trace_id", "timestamp", "labels"]
+    }
+  },
+  "firestore": {
+    "/traces/{traceId}": {
+      "schema": "ImageTrace",
+      "description": "Collection of resolution traces."
+    },
+    "/verifications/{verificationId}": {
+      "schema": "Verification",
+      "description": "Collection of human verifications."
+    }
+  }
+}

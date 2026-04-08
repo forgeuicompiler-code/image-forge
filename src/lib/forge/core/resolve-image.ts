@@ -28,10 +28,33 @@ export async function resolveImage(input: {
   const scored = scoreCandidates(allCandidates, context, constraints);
 
   // 4. Rank
-  const best = scored.sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+  const sorted = scored.sort((a, b) => (b.score || 0) - (a.score || 0));
+  const best = sorted[0];
+  const secondBest = sorted[1];
+  const margin = best && secondBest ? (best.score || 0) - (secondBest.score || 0) : 1;
+
+  // Calculate Variance of Top-K scores
+  const topK = sorted.slice(0, 5);
+  const scores = topK.map(c => c.score || 0);
+  const mean = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
+  const variance = scores.length > 1 
+    ? scores.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / scores.length 
+    : 0;
 
   // 5. FSM decision & Fallback
-  const final = applyFallback(best, context);
+  const final = applyFallback(best, context, { margin, variance, candidates: sorted });
+  
+  // Attach top candidates for evaluation/debugging
+  final.candidates = sorted.slice(0, 5);
+  
+  // Add Trace Metadata
+  final.metadata.trace = {
+    queries,
+    candidate_count: allCandidates.length,
+    top_scores: sorted.slice(0, 5).map(c => Number((c.score || 0).toFixed(3))),
+    decision: final.metadata.fallback_applied ? "fallback" : "direct_match"
+  };
+  final.metadata.variance = variance;
 
   return final;
 }
