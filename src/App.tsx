@@ -3,7 +3,7 @@ import { Search, Image as ImageIcon, ShieldCheck, Zap, Info, ExternalLink, Refre
 import { motion, AnimatePresence } from "motion/react";
 import { auth, signInWithGoogle, signOut } from "./lib/firebase";
 import { onAuthStateChanged, User } from "firebase/auth";
-import { tagCandidate, logTrace } from "./services/taggingService";
+import { tagAndLogTrace } from "./services/taggingService";
 import { fetchTraces, saveVerification, VerificationLabels } from "./services/verificationService";
 
 interface ForgeResponse {
@@ -20,6 +20,13 @@ interface ForgeResponse {
     fallback_applied: boolean;
     confidence_level?: "high" | "medium" | "low";
     reason?: string;
+  };
+  semantic_report?: {
+    subject: string[];
+    brand: string | null;
+    ui_role_fit: string[];
+    composition: string[];
+    confidence: number;
   };
 }
 
@@ -113,33 +120,21 @@ export default function App() {
       if (id === requestId.current) {
         setResult(data);
 
-        // AI Tagging & Logging (Frontend)
+        // AI Tagging & Logging (Server-side Proxy)
         if (user) {
           const traceId = `trace-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-          if (!data.metadata.fallback_applied && data.candidates?.[0]) {
-            tagCandidate(data.candidates[0].description).then(tags => {
-              logTrace({
-                id: traceId,
-                context: { subject, brand, ui_role: uiRole },
-                selected_url: data.url,
-                ai_tags: tags,
-                decision: "direct_match",
-                margin: data.metadata.margin,
-                variance: data.metadata.variance,
-                candidates: data.candidates.slice(0, 3).map((c: any) => ({ id: c.id, score: c.score, description: c.description }))
-              });
-            });
-          } else {
-            logTrace({
-              id: traceId,
-              context: { subject, brand, ui_role: uiRole },
-              selected_url: data.url,
-              decision: "fallback",
-              reason: data.metadata.reason,
-              margin: data.metadata.margin,
-              variance: data.metadata.variance
-            });
-          }
+          const traceData = {
+            id: traceId,
+            context: { subject, brand, ui_role: uiRole },
+            selected_url: data.url,
+            decision: data.metadata.fallback_applied ? "fallback" : "direct_match",
+            reason: data.metadata.reason,
+            margin: data.metadata.margin,
+            variance: data.metadata.variance,
+            candidates: data.candidates?.slice(0, 3).map((c: any) => ({ id: c.id, score: c.score, description: c.description }))
+          };
+
+          tagAndLogTrace(traceData, data.candidates?.[0]?.description);
         }
       }
     } catch (error) {
@@ -169,9 +164,31 @@ export default function App() {
   const tuneWeights = async () => {
     setEvalLoading(true);
     try {
-      const response = await fetch("/api/evaluation/tune", { method: "POST" });
+      const user = auth.currentUser;
+      if (!user) return;
+      const idToken = await user.getIdToken();
+
+      const response = await fetch("/api/evaluation/tune", { 
+        method: "POST",
+        headers: { "Authorization": `Bearer ${idToken}` }
+      });
       const data = await response.json();
-      alert(`Optimization Complete!\nBest Weights: Semantic ${data.best_weights.semantic}, Visual ${data.best_weights.visual}, Quality ${data.best_weights.quality}\nEstimated Improvement: +${(data.improvement * 100).toFixed(1)}%`);
+      
+      if (data.best_weights) {
+        // Persist to Firestore from Client
+        const configRef = doc(db, "config", "ranking");
+        await setDoc(configRef, {
+          semantic_weight: data.best_weights.semantic,
+          visual_weight: data.best_weights.visual,
+          quality_weight: data.best_weights.quality,
+          version: `tuned-${Date.now()}`,
+          updated_at: new Date().toISOString(),
+          updated_by: user.email
+        });
+        
+        alert(`Optimization Complete & Persisted!\nBest Weights: Semantic ${data.best_weights.semantic}, Visual ${data.best_weights.visual}, Quality ${data.best_weights.quality}\nEstimated Improvement: +${(data.improvement * 100).toFixed(1)}%`);
+      }
+      
       runEvaluation(); // Refresh metrics
     } catch (error) {
       console.error("Error tuning weights:", error);
@@ -431,6 +448,65 @@ export default function App() {
                   </p>
                 </div>
               </div>
+
+              {/* Semantic Analysis Report */}
+              <AnimatePresence>
+                {result?.semantic_report && (
+                  <motion.section 
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="bg-white/5 border border-white/10 rounded-2xl p-6 space-y-6"
+                  >
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-bold uppercase tracking-widest text-white/40 flex items-center gap-2">
+                        <BarChart3 size={14} /> Real-Time Semantic Analysis
+                      </h3>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-bold text-white/30 uppercase">AI Confidence</span>
+                        <div className="w-24 bg-white/10 h-1.5 rounded-full overflow-hidden">
+                          <div 
+                            className="bg-orange-500 h-full" 
+                            style={{ width: `${result.semantic_report.confidence * 100}%` }} 
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                      <div className="space-y-2">
+                        <p className="text-[10px] font-bold text-white/30 uppercase">Detected Subjects</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {result.semantic_report.subject.map(s => (
+                            <span key={s} className="px-2 py-0.5 bg-white/10 rounded text-[10px] font-medium">{s}</span>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <p className="text-[10px] font-bold text-white/30 uppercase">Brand Detection</p>
+                        <div className={`px-3 py-1 rounded-lg text-xs font-bold inline-block ${result.semantic_report.brand ? 'bg-blue-500/20 text-blue-400' : 'bg-white/5 text-white/40'}`}>
+                          {result.semantic_report.brand || "No brand visible"}
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <p className="text-[10px] font-bold text-white/30 uppercase">UI Role Fit</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {result.semantic_report.ui_role_fit.map(role => (
+                            <span key={role} className="px-2 py-0.5 bg-orange-500/20 text-orange-400 rounded text-[10px] font-medium">{role}</span>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <p className="text-[10px] font-bold text-white/30 uppercase">Visual Composition</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {result.semantic_report.composition.map(c => (
+                            <span key={c} className="px-2 py-0.5 bg-white/5 text-white/60 rounded text-[10px] font-medium">{c}</span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </motion.section>
+                )}
+              </AnimatePresence>
             </div>
           </div>
         ) : (
@@ -644,12 +720,13 @@ function VerificationTab({ user }: { user: User | null }) {
     loadTraces();
   }, []);
 
-  const handleVerify = async (traceId: string) => {
+  const handleVerify = async (traceId: string, quickLabels?: VerificationLabels) => {
     if (!user) {
       signInWithGoogle();
       return;
     }
-    await saveVerification(traceId, labels);
+    const trace = traces.find(t => t.id === traceId);
+    await saveVerification(traceId, quickLabels || labels, trace?.ai_tags);
     setVerifyingId(null);
     loadTraces(); // Refresh
   };
@@ -710,7 +787,7 @@ function VerificationTab({ user }: { user: User | null }) {
             <motion.div 
               key={trace.id}
               layout
-              className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden flex flex-col"
+              className={`bg-white/5 border rounded-2xl overflow-hidden flex flex-col transition-colors ${trace.ai_tags?.confidence < 0.5 ? 'border-orange-500/50 bg-orange-500/5' : 'border-white/10'}`}
             >
               <div className="aspect-video relative group">
                 <img 
@@ -721,6 +798,12 @@ function VerificationTab({ user }: { user: User | null }) {
                 <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center p-4 text-center">
                   <p className="text-xs font-medium">{trace.context.subject}</p>
                 </div>
+                {trace.ai_tags?.confidence < 0.5 && (
+                  <div className="absolute top-2 right-2 bg-orange-500 text-black text-[8px] font-black uppercase px-1.5 py-0.5 rounded flex items-center gap-1">
+                    <AlertCircle size={10} />
+                    Low Confidence
+                  </div>
+                )}
               </div>
 
               <div className="p-4 space-y-4 flex-1">
@@ -787,22 +870,36 @@ function VerificationTab({ user }: { user: User | null }) {
                     </div>
                   </div>
                 ) : (
-                  <button 
-                    onClick={() => {
-                      setVerifyingId(trace.id);
-                      setLabels({
+                  <div className="flex gap-2 mt-2">
+                    <button 
+                      onClick={() => {
+                        setVerifyingId(trace.id);
+                        setLabels({
+                          subject_correct: true,
+                          brand_correct: true,
+                          composition_correct: true,
+                          ui_fit_correct: true,
+                          notes: ""
+                        });
+                      }}
+                      className="flex-1 py-2 border border-white/10 rounded-xl text-[10px] font-bold uppercase tracking-wider hover:bg-white hover:text-black transition-all flex items-center justify-center gap-2"
+                    >
+                      Verify
+                    </button>
+                    <button 
+                      onClick={() => handleVerify(trace.id, {
                         subject_correct: true,
                         brand_correct: true,
                         composition_correct: true,
                         ui_fit_correct: true,
-                        notes: ""
-                      });
-                    }}
-                    className="w-full mt-2 py-2 border border-white/10 rounded-xl text-[10px] font-bold uppercase tracking-wider hover:bg-white hover:text-black transition-all flex items-center justify-center gap-2"
-                  >
-                    <CheckCircle2 size={12} />
-                    Verify Result
-                  </button>
+                        notes: "Quick verify"
+                      })}
+                      className="px-3 py-2 bg-green-500/10 text-green-500 border border-green-500/20 rounded-xl text-[10px] font-bold uppercase hover:bg-green-500 hover:text-black transition-all"
+                      title="All Correct"
+                    >
+                      <Check size={14} />
+                    </button>
+                  </div>
                 )}
               </div>
             </motion.div>

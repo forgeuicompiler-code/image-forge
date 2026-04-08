@@ -39,6 +39,19 @@
         "disagreement": { "type": "boolean" }
       },
       "required": ["trace_id", "timestamp", "labels"]
+    },
+    "RankingConfig": {
+      "title": "Ranking Configuration",
+      "description": "Persistent weights for the ranking engine.",
+      "type": "object",
+      "properties": {
+        "semantic_weight": { "type": "number" },
+        "visual_weight": { "type": "number" },
+        "quality_weight": { "type": "number" },
+        "updated_at": { "type": "string", "format": "date-time" },
+        "version": { "type": "string" }
+      },
+      "required": ["semantic_weight", "visual_weight", "quality_weight", "updated_at", "version"]
     }
   },
   "firestore": {
@@ -49,6 +62,10 @@
     "/verifications/{verificationId}": {
       "schema": "Verification",
       "description": "Collection of human verifications."
+    },
+    "/config/ranking": {
+      "schema": "RankingConfig",
+      "description": "Singleton document for ranking weights."
     }
   }
 }

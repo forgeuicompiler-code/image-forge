@@ -25,14 +25,15 @@ export interface ScoredCandidate extends CandidateImage {
 export function scoreCandidates(
   candidates: CandidateImage[],
   context: ImageContext,
-  constraints: ImageConstraints
+  constraints: ImageConstraints,
+  dynamicWeights?: { semantic: number; visual: number; quality: number }
 ): ScoredCandidate[] {
   return candidates.map((c) => {
     const semantic = Math.max(0, Math.min(1, calculateSemanticScore(c, context)));
     const visual = Math.max(0, Math.min(1, calculateVisualScore(c, context, constraints)));
     const quality = Math.max(0, Math.min(1, calculateQualityScore(c)));
 
-    const weights = getWeights(context.ui_role);
+    const weights = dynamicWeights || getWeights(context.ui_role);
 
     const weightedSemantic = weights.semantic * semantic;
     const weightedVisual = weights.visual * visual;

@@ -4,6 +4,8 @@ import { searchUnsplash } from "../providers/unsplash.ts";
 import { scoreCandidates } from "./scorer.ts";
 import { applyFallback } from "./fallback.ts";
 import { ImageContext, ImageConstraints, ResolveImageResponse } from "../types.ts";
+import { getRankingWeights } from "../services/config.service.ts";
+import { tagCandidateServer } from "../services/ai.service.ts";
 
 export async function resolveImage(input: {
   context: any;
@@ -12,10 +14,13 @@ export async function resolveImage(input: {
   const context = parseContext(input.context);
   const constraints = input.constraints || {};
 
-  // 1. Build queries
+  // 1. Fetch Dynamic Weights
+  const weights = await getRankingWeights();
+
+  // 2. Build queries
   const queries = buildQueries(context);
 
-  // 2. Retrieve (Parallel search for all queries to expand pool)
+  // 3. Retrieve (Parallel search for all queries to expand pool)
   const candidatePromises = queries.map(q => searchUnsplash(q));
   const results = await Promise.all(candidatePromises);
   
@@ -24,8 +29,8 @@ export async function resolveImage(input: {
     new Map(results.flat().map(c => [c.id, c])).values()
   );
 
-  // 3. Score
-  const scored = scoreCandidates(allCandidates, context, constraints);
+  // 4. Score with Dynamic Weights
+  const scored = scoreCandidates(allCandidates, context, constraints, weights);
 
   // 4. Rank
   const sorted = scored.sort((a, b) => (b.score || 0) - (a.score || 0));
@@ -55,6 +60,15 @@ export async function resolveImage(input: {
     decision: final.metadata.fallback_applied ? "fallback" : "direct_match"
   };
   final.metadata.variance = variance;
+  
+  // 6. Real-time Semantic Analysis (Report)
+  if (best && !final.metadata.fallback_applied) {
+    try {
+      final.semantic_report = await tagCandidateServer(best.description);
+    } catch (e) {
+      console.error("Real-time semantic tagging failed:", e);
+    }
+  }
 
   return final;
 }

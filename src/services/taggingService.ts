@@ -1,8 +1,5 @@
-import { GoogleGenAI, Type } from "@google/genai";
-import { db, handleFirestoreError, OperationType } from "../lib/firebase";
-import { collection, doc, setDoc, serverTimestamp } from "firebase/firestore";
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+import { auth, db, handleFirestoreError, OperationType } from "../lib/firebase";
+import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 
 export interface AITags {
   subject: string[];
@@ -12,50 +9,50 @@ export interface AITags {
   confidence: number;
 }
 
-export async function tagCandidate(description: string): Promise<AITags> {
+export async function tagAndLogTrace(traceData: any, description?: string) {
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `Analyze this image description and extract structured semantic tags: "${description}"`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            subject: { type: Type.ARRAY, items: { type: Type.STRING } },
-            brand: { type: Type.STRING, nullable: true },
-            ui_role_fit: { type: Type.ARRAY, items: { type: Type.STRING } },
-            composition: { type: Type.ARRAY, items: { type: Type.STRING } },
-            confidence: { type: Type.NUMBER }
+    const user = auth.currentUser;
+    if (!user) return;
+
+    const idToken = await user.getIdToken();
+    
+    // 1. Get AI Tags from server
+    let ai_tags = null;
+    if (description) {
+      try {
+        const response = await fetch("/api/ai/tag", {
+          method: "POST",
+          headers: { 
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${idToken}`
           },
-          required: ["subject", "brand", "ui_role_fit", "composition", "confidence"]
-        }
+          body: JSON.stringify({ description })
+        });
+        const data = await response.json();
+        ai_tags = data.tags;
+      } catch (e) {
+        console.error("AI Tagging failed:", e);
       }
-    });
+    }
 
-    return JSON.parse(response.text || "{}");
+    // 2. Log Trace directly to Firestore from Client
+    const path = "traces";
+    try {
+      const traceRef = doc(db, path, traceData.id);
+      await setDoc(traceRef, {
+        ...traceData,
+        ai_tags,
+        timestamp: new Date().toISOString(),
+        server_timestamp: serverTimestamp(),
+        logged_by: user.email,
+        uid: user.uid,
+        schema_version: 1
+      });
+      console.log("Trace logged successfully to Firestore from client.");
+    } catch (e) {
+      handleFirestoreError(e, OperationType.CREATE, path);
+    }
   } catch (error) {
-    console.error("Tagging failed:", error);
-    return {
-      subject: [],
-      brand: null,
-      ui_role_fit: [],
-      composition: [],
-      confidence: 0
-    };
-  }
-}
-
-export async function logTrace(traceData: any) {
-  const path = "traces";
-  try {
-    const traceRef = doc(collection(db, path), traceData.id);
-    await setDoc(traceRef, {
-      ...traceData,
-      timestamp: new Date().toISOString(),
-      server_timestamp: serverTimestamp()
-    });
-  } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, path);
+    console.error("Tagging/logging process failed:", error);
   }
 }

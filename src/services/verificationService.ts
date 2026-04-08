@@ -9,13 +9,20 @@ export interface VerificationLabels {
   notes: string;
 }
 
-export async function saveVerification(traceId: string, labels: VerificationLabels) {
+export async function saveVerification(traceId: string, labels: VerificationLabels, aiTags?: any) {
   const path = "verifications";
   try {
-    const verificationId = `ver-${traceId}-${auth.currentUser?.uid}`;
+    const verificationId = `ver-${traceId}-${auth.currentUser?.uid}-${Date.now()}`; // Versioning via timestamp
     const verificationRef = doc(collection(db, path), verificationId);
     
-    const disagreement = !labels.subject_correct || !labels.brand_correct || !labels.composition_correct || !labels.ui_fit_correct;
+    const disagreement = {
+      subject: !labels.subject_correct,
+      brand: !labels.brand_correct,
+      composition: !labels.composition_correct,
+      ui_fit: !labels.ui_fit_correct
+    };
+
+    const hasAnyDisagreement = Object.values(disagreement).some(v => v);
 
     await setDoc(verificationRef, {
       trace_id: traceId,
@@ -24,7 +31,9 @@ export async function saveVerification(traceId: string, labels: VerificationLabe
       user_email: auth.currentUser?.email,
       uid: auth.currentUser?.uid,
       labels,
-      disagreement
+      ai_tags_snapshot: aiTags || null,
+      disagreement,
+      has_disagreement: hasAnyDisagreement
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);

@@ -69,19 +69,35 @@ service cloud.firestore {
     // ===============================================================
 
     function isValidTrace(data) {
-      return data.keys().hasAll(['id', 'timestamp', 'context', 'selected_url']) &&
+      let allowedFields = ['id', 'timestamp', 'context', 'selected_url', 'candidates', 'ai_tags', 'decision', 'reason', 'margin', 'variance', 'server_timestamp', 'logged_by', 'uid', 'schema_version'];
+      return data.keys().hasAll(['id', 'timestamp', 'context', 'selected_url', 'schema_version', 'uid']) &&
+             data.keys().hasOnly(allowedFields) &&
              data.id is string &&
              isValidDateString(data.timestamp) &&
              data.context is map &&
-             data.selected_url is string;
+             data.selected_url is string &&
+             data.schema_version == 1 &&
+             data.uid == request.auth.uid;
     }
 
     function isValidVerification(data) {
+      let allowedFields = ['trace_id', 'timestamp', 'labels', 'uid', 'user_email', 'disagreement', 'server_timestamp'];
       return data.keys().hasAll(['trace_id', 'timestamp', 'labels', 'uid']) &&
+             data.keys().hasOnly(allowedFields) &&
              data.trace_id is string &&
              isValidDateString(data.timestamp) &&
              data.labels is map &&
              data.uid == request.auth.uid;
+    }
+
+    function isValidConfig(data) {
+      let allowedFields = ['semantic_weight', 'visual_weight', 'quality_weight', 'version', 'updated_at', 'updated_by', 'server_timestamp'];
+      return data.keys().hasAll(['semantic_weight', 'visual_weight', 'quality_weight', 'version']) &&
+             data.keys().hasOnly(allowedFields) &&
+             data.semantic_weight is number &&
+             data.visual_weight is number &&
+             data.quality_weight is number &&
+             data.version is string;
     }
 
     // ===============================================================
@@ -89,19 +105,22 @@ service cloud.firestore {
     // ===============================================================
 
     match /traces/{traceId} {
-      // Traces are system-generated but readable by authenticated users for verification
+      // Traces are system-generated and immutable
       allow read: if isAuthenticated();
       allow create: if isAuthenticated() && isValidTrace(request.resource.data);
-      allow update, delete: if isAdmin();
+      allow update, delete: if false; // IMMUTABILITY
     }
 
     match /verifications/{verificationId} {
-      // Users can only manage their own verifications
+      // Verifications are append-only and owner-restricted
       allow read: if isAuthenticated() && (isDocOwner() || isAdmin());
       allow create: if isAuthenticated() && isValidVerification(request.resource.data);
-      allow update: if isAuthenticated() && isDocOwner() && isValidVerification(request.resource.data) &&
-                      request.resource.data.trace_id == resource.data.trace_id;
-      allow delete: if isAdmin();
+      allow update, delete: if false; // APPEND-ONLY
+    }
+
+    match /config/ranking {
+      allow read: if true; // Publicly readable for the engine
+      allow write: if isAdmin() && isValidConfig(request.resource.data);
     }
 
     match /users/{userId} {

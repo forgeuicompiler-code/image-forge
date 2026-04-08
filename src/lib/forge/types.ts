@@ -64,4 +64,11 @@ export interface ResolveImageResponse {
     };
   };
   candidates?: CandidateImage[];
+  semantic_report?: {
+    subject: string[];
+    brand: string | null;
+    ui_role_fit: string[];
+    composition: string[];
+    confidence: number;
+  };
 }
