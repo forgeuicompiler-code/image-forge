@@ -46,6 +46,7 @@ export interface ResolveImageResponse {
   metadata: {
     alt_text: string;
     fallback_applied: boolean;
+    confidence_level?: "high" | "medium" | "low";
     reason?: string;
   };
 }

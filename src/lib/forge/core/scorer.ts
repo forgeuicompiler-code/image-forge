@@ -1,6 +1,17 @@
 import { CandidateImage, ImageContext, ImageConstraints, UIRole } from "../types.ts";
 
-const NEGATIVE_TERMS = ["vs", "versus", "alternative", "compared to", "comparison"];
+const NEGATIVE_TERMS = ["vs", "versus", "alternative", "compared to", "comparison", "review", "top 10", "best of"];
+
+const SYNONYMS: Record<string, string[]> = {
+  "shoe": ["sneaker", "footwear", "kicks"],
+  "shoes": ["sneaker", "footwear", "kicks"],
+  "running": ["sport", "fitness", "athletic"],
+  "nike": ["swoosh"],
+  "adidas": ["three stripes"],
+  "hero": ["banner", "header", "main"],
+  "product": ["item", "object", "merchandise"],
+  "avatar": ["profile", "portrait", "user", "person"],
+};
 
 export function scoreCandidates(
   candidates: CandidateImage[],
@@ -33,57 +44,90 @@ export function scoreCandidates(
 
 function calculateSemanticScore(c: CandidateImage, context: ImageContext): number {
   const text = (c.description + " " + c.id).toLowerCase();
-  const subjectWords = context.subject.split(" ");
   
-  let matches = 0;
+  // Subject Match
+  const subjectWords = context.subject.toLowerCase().split(" ");
+  let subjectMatches = 0;
   subjectWords.forEach(word => {
-    if (text.includes(word)) matches++;
+    const variants = [word, ...(SYNONYMS[word] || [])];
+    if (variants.some(v => text.includes(v))) subjectMatches++;
   });
+  const subjectScore = subjectMatches / subjectWords.length;
 
-  let score = matches / subjectWords.length;
-
-  if (context.brand && text.includes(context.brand.toLowerCase())) {
-    score += 0.5; // Brand bonus
+  // Brand Match
+  let brandScore = 0;
+  if (context.brand) {
+    const brand = context.brand.toLowerCase();
+    const variants = [brand, ...(SYNONYMS[brand] || [])];
+    if (variants.some(v => text.includes(v))) brandScore = 1;
   }
 
-  // Negative keyword penalty
-  if (NEGATIVE_TERMS.some(term => text.includes(term))) {
-    score *= 0.5;
+  // Modifier Match (Style/Mood)
+  let modifierMatches = 0;
+  const modifiers = [context.style, context.mood].filter(Boolean) as string[];
+  modifiers.forEach(mod => {
+    const modLower = mod.toLowerCase();
+    const variants = [modLower, ...(SYNONYMS[modLower] || [])];
+    if (variants.some(v => text.includes(v))) modifierMatches++;
+  });
+  const modifierScore = modifiers.length > 0 ? modifierMatches / modifiers.length : 1;
+
+  // Weighted Aggregation
+  let score = 0.5 * subjectScore + 0.3 * brandScore + 0.2 * modifierScore;
+
+  // Negative keyword penalty (cumulative)
+  const negativeCount = NEGATIVE_TERMS.filter(term => text.includes(term)).length;
+  if (negativeCount > 0) {
+    score *= (1 - 0.2 * negativeCount);
   }
 
-  return Math.min(1, score);
+  // Soft penalty for missing brand if requested
+  if (context.brand && brandScore === 0) {
+    score *= 0.6;
+  }
+
+  return Math.min(1, Math.max(0, score));
 }
 
 function calculateVisualScore(c: CandidateImage, context: ImageContext, constraints: ImageConstraints): number {
-  let score = 0.5; // Baseline
-
-  // Aspect Ratio Penalty
+  let arScore = 1;
   if (constraints.aspect_ratio) {
     const [targetW, targetH] = constraints.aspect_ratio.split(":").map(Number);
-    const targetRatio = targetW / targetH;
-    const actualRatio = c.width / c.height;
-    
-    const diff = Math.abs(targetRatio - actualRatio);
-    if (diff < 0.1) score += 0.3;
-    else if (diff > 0.5) score -= 0.3;
+    const targetAR = targetW / targetH;
+    const actualAR = c.width / c.height;
+    arScore = 1 - Math.min(1, Math.abs(actualAR - targetAR) / targetAR);
   }
 
-  // UI Role Composition Keywords
+  // Composition Signal Strength
   const text = c.description.toLowerCase();
-  if (context.ui_role === "hero" && (text.includes("copy space") || text.includes("minimal"))) {
-    score += 0.2;
-  }
-  if (context.ui_role === "product" && (text.includes("white background") || text.includes("studio"))) {
-    score += 0.2;
+  let compScore = 0.5;
+  const signals = {
+    hero: ["copy space", "minimal", "wide", "cinematic"],
+    product: ["white background", "studio", "centered", "isolated"],
+    avatar: ["portrait", "headshot", "bokeh", "natural"],
+    background: ["abstract", "texture", "pattern", "ambient"]
+  };
+
+  const roleSignals = signals[context.ui_role as keyof typeof signals] || [];
+  if (roleSignals.length > 0) {
+    const matches = roleSignals.filter(s => text.includes(s)).length;
+    compScore = matches / roleSignals.length;
   }
 
+  const score = 0.4 * arScore + 0.6 * compScore;
   return Math.max(0, Math.min(1, score));
 }
 
 function calculateQualityScore(c: CandidateImage): number {
-  // Simple popularity proxy
+  // Resolution score (penalize extremes, target min dimension)
+  const targetMin = 800;
+  const minDim = Math.min(c.width, c.height);
+  const resScore = Math.min(1, minDim / targetMin);
+
+  // Normalized likes
   const likesScore = Math.min(1, c.likes / 100);
-  return likesScore;
+
+  return 0.4 * resScore + 0.6 * likesScore;
 }
 
 function getWeights(role: UIRole) {

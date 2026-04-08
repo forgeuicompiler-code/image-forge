@@ -13,7 +13,7 @@ export async function searchUnsplash(query: string): Promise<CandidateImage[]> {
     const response = await axios.get("https://api.unsplash.com/search/photos", {
       params: {
         query,
-        per_page: 10,
+        per_page: 30,
         orientation: "landscape",
       },
       headers: {

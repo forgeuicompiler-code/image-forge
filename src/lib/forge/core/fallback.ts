@@ -5,6 +5,11 @@ export function applyFallback(best: any, context: ImageContext): ResolveImageRes
     return getPlaceholder(context.ui_role);
   }
 
+  // Confidence Calibration
+  let confidenceLevel: "high" | "medium" | "low" = "low";
+  if (best.score > 0.85) confidenceLevel = "high";
+  else if (best.score > 0.6) confidenceLevel = "medium";
+
   return {
     url: best.url,
     confidence: best.score,
@@ -13,6 +18,7 @@ export function applyFallback(best: any, context: ImageContext): ResolveImageRes
     metadata: {
       alt_text: best.description || context.subject,
       fallback_applied: best.score < 0.75,
+      confidence_level: confidenceLevel,
     },
   };
 }

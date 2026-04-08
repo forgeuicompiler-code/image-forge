@@ -15,8 +15,8 @@ export async function resolveImage(input: {
   // 1. Build queries
   const queries = buildQueries(context);
 
-  // 2. Retrieve (MVP: Parallel search for top 2 queries)
-  const candidatePromises = queries.slice(0, 2).map(q => searchUnsplash(q));
+  // 2. Retrieve (Parallel search for all queries to expand pool)
+  const candidatePromises = queries.map(q => searchUnsplash(q));
   const results = await Promise.all(candidatePromises);
   
   // Flatten and deduplicate by ID
