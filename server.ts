@@ -4,6 +4,7 @@ import { createServer as createViteServer } from "vite";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import imageRoutes from "./src/lib/forge/api/images.route.ts";
+import evaluationRoutes from "./src/lib/forge/api/evaluation.route.ts";
 
 dotenv.config();
 
@@ -18,6 +19,7 @@ async function startServer() {
 
   // API Routes
   app.use("/api/images", imageRoutes);
+  app.use("/api/evaluation", evaluationRoutes);
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
