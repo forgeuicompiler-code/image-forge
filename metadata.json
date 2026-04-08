@@ -1,0 +1,5 @@
+{
+  "name": "Forge: Semantic Image Infrastructure",
+  "description": "A context-aware image resolution engine for AI-native UI systems.",
+  "requestFramePermissions": []
+}
