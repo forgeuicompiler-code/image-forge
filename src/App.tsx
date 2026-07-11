@@ -96,14 +96,63 @@ export default function App() {
   const [selectedCandidateTags, setSelectedCandidateTags] = useState<any>(null);
   const [candidateTaggingLoading, setCandidateTaggingLoading] = useState(false);
   const [candidateTaggingError, setCandidateTaggingError] = useState<string | null>(null);
+  const [selectedCandidateAudit, setSelectedCandidateAudit] = useState<any>(null);
+  const [candidateAuditLoading, setCandidateAuditLoading] = useState(false);
+  const [candidateAuditError, setCandidateAuditError] = useState<string | null>(null);
   const [sourceFilter, setSourceFilter] = useState<"all" | "unsplash" | "openverse" | "wikimedia">("all");
   const [sortBy, setSortBy] = useState<"score" | "likes">("score");
+
+  // Gemini Indulgence & Page Status States
+  const [pageAudit, setPageAudit] = useState<any>(null);
+  const [pageAuditLoading, setPageAuditLoading] = useState(false);
+  const [pageAuditError, setPageAuditError] = useState<string | null>(null);
+  const [accumulatedTokens, setAccumulatedTokens] = useState<number>(0);
+
+  const fetchPageStatus = async (currentSubject: string, currentBrand: string, currentRole: string, currentCandidates: any[]) => {
+    if (!currentCandidates || currentCandidates.length === 0) return;
+    setPageAuditLoading(true);
+    setPageAudit(null);
+    setPageAuditError(null);
+    try {
+      const response = await fetch("/api/ai/page-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          subject: currentSubject,
+          brand: currentBrand,
+          uiRole: currentRole,
+          candidates: currentCandidates.slice(0, 10).map((c: any) => ({
+            id: c.id,
+            description: c.description,
+            score: c.score,
+            source: c.source
+          }))
+        })
+      });
+      const data = await response.json();
+      if (data.success && data.report) {
+        setPageAudit(data.report);
+        if (data.report.usage) {
+          setAccumulatedTokens(prev => prev + data.report.usage.totalTokens);
+        }
+      } else {
+        setPageAuditError(data.error || "Failed to generate page-level audit.");
+      }
+    } catch (err: any) {
+      console.error("Error fetching page status:", err);
+      setPageAuditError(err instanceof Error ? err.message : "Error generating page status.");
+    } finally {
+      setPageAuditLoading(false);
+    }
+  };
 
   // Race condition protection
   const requestId = useRef(0);
 
   useEffect(() => {
     if (selectedCandidate) {
+      const currentId = ++requestId.current;
+      
       const fetchTags = async () => {
         setCandidateTaggingLoading(true);
         setSelectedCandidateTags(null);
@@ -115,21 +164,69 @@ export default function App() {
             body: JSON.stringify({ description: selectedCandidate.description })
           });
           const data = await response.json();
-          if (data.success && data.tags) {
-            setSelectedCandidateTags(data.tags);
-          } else {
-            setCandidateTaggingError(data.error || "Failed to analyze candidate");
+          if (currentId === requestId.current) {
+            if (data.success && data.tags) {
+              setSelectedCandidateTags(data.tags);
+              if (data.tags.usage) {
+                setAccumulatedTokens(prev => prev + data.tags.usage.totalTokens);
+              }
+            } else {
+              setCandidateTaggingError(data.error || "Failed to analyze candidate");
+            }
           }
         } catch (err: any) {
-          console.error("Error tagging candidate:", err);
-          setCandidateTaggingError(err instanceof Error ? err.message : "Error analyzing candidate");
+          if (currentId === requestId.current) {
+            console.error("Error tagging candidate:", err);
+            setCandidateTaggingError(err instanceof Error ? err.message : "Error analyzing candidate");
+          }
         } finally {
-          setCandidateTaggingLoading(false);
+          if (currentId === requestId.current) {
+            setCandidateTaggingLoading(false);
+          }
         }
       };
+
+      const fetchAudit = async () => {
+        setCandidateAuditLoading(true);
+        setSelectedCandidateAudit(null);
+        setCandidateAuditError(null);
+        try {
+          const response = await fetch("/api/ai/audit", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              imageUrl: selectedCandidate.url,
+              requestedSubject: subject,
+              candidateDescription: selectedCandidate.description
+            })
+          });
+          const data = await response.json();
+          if (currentId === requestId.current) {
+            if (data.success && data.audit) {
+              setSelectedCandidateAudit(data.audit);
+              if (data.audit.usage) {
+                setAccumulatedTokens(prev => prev + data.audit.usage.totalTokens);
+              }
+            } else {
+              setCandidateAuditError(data.error || "Failed to audit candidate");
+            }
+          }
+        } catch (err: any) {
+          if (currentId === requestId.current) {
+            console.error("Error auditing candidate:", err);
+            setCandidateAuditError(err instanceof Error ? err.message : "Error auditing candidate");
+          }
+        } finally {
+          if (currentId === requestId.current) {
+            setCandidateAuditLoading(false);
+          }
+        }
+      };
+
       fetchTags();
+      fetchAudit();
     }
-  }, [selectedCandidate]);
+  }, [selectedCandidate, subject]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
@@ -176,6 +273,9 @@ export default function App() {
         } else {
           setResult(data);
           setSearchError(null);
+          
+          // Trigger Page Status & Indulgence Audit
+          fetchPageStatus(subject, brand, uiRole, data.candidates || []);
 
           // AI Tagging & Logging (Server-side Proxy)
           if (user) {
@@ -276,6 +376,17 @@ export default function App() {
               <h1 className="text-xl font-bold tracking-tight">FORGE</h1>
               <p className="text-xs text-white/50 uppercase tracking-widest">Semantic Image Infrastructure</p>
             </div>
+            {accumulatedTokens > 0 && (
+              <motion.div 
+                initial={{ scale: 0.8, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                className="hidden md:flex items-center gap-1.5 px-3.5 py-1 bg-purple-500/10 border border-purple-500/20 text-purple-400 rounded-full text-[10px] font-mono shadow-[0_0_15px_rgba(168,85,247,0.15)]"
+                title="Accumulated tokens processed by Gemini models in this search session"
+              >
+                <Sparkles size={11} className="text-purple-400" />
+                <span className="font-bold">{accumulatedTokens.toLocaleString()} TOKENS</span>
+              </motion.div>
+            )}
           </div>
           
           <div className="flex bg-white/5 p-1 rounded-xl border border-white/10">
@@ -397,6 +508,7 @@ export default function App() {
                   </div>
 
                   <button
+                    id="forge-search-trigger"
                     onClick={resolveImage}
                     disabled={loading || !subject.trim()}
                     className="w-full bg-white text-black hover:bg-orange-500 hover:text-black font-black py-4 px-6 rounded-2xl tracking-wide transition-all flex items-center justify-center gap-2 shadow-xl hover:scale-[1.01] active:scale-95 disabled:opacity-30 disabled:pointer-events-none"
@@ -499,6 +611,7 @@ export default function App() {
                     </div>
 
                     <button
+                      id="forge-search-trigger-inline"
                       onClick={resolveImage}
                       disabled={loading || !subject.trim()}
                       className="bg-white hover:bg-orange-500 text-black px-5 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center gap-1.5 shadow-md disabled:opacity-30"
@@ -571,6 +684,198 @@ export default function App() {
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
                   {/* LEFT COLUMN: MULTIPLE IMAGE SEARCH RESULTS */}
                   <div className={`${selectedCandidate ? "lg:col-span-8" : "lg:col-span-12"} space-y-4 transition-all duration-300`}>
+                    {/* GEMINI INDULGENCE & PAGE QUALITY AUDIT CENTER */}
+                    {!loading && (pageAuditLoading || pageAudit) && (
+                      <div className="mb-4">
+                        {pageAuditLoading ? (
+                          <div className="bg-neutral-900/40 border border-white/5 rounded-3xl p-6 space-y-4 animate-pulse">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-3 animate-pulse">
+                                <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center animate-spin">
+                                  <RefreshCw size={14} className="text-purple-400" />
+                                </div>
+                                <div className="space-y-2">
+                                  <div className="h-4 w-32 bg-white/10 rounded" />
+                                  <div className="h-2.5 w-20 bg-white/5 rounded" />
+                                </div>
+                              </div>
+                              <div className="h-6 w-24 bg-white/10 rounded-full" />
+                            </div>
+                          </div>
+                        ) : pageAudit ? (
+                          <motion.div 
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className={`bg-neutral-900/40 border ${
+                              pageAudit.page_status === "mismatch_detected" 
+                                ? "border-amber-500/30 shadow-[0_0_25px_rgba(245,158,11,0.06)] bg-gradient-to-br from-neutral-900/80 to-amber-950/10" 
+                                : pageAudit.page_status === "fallback_active"
+                                ? "border-orange-500/30 shadow-[0_0_25px_rgba(249,115,22,0.06)]"
+                                : "border-emerald-500/20 shadow-[0_0_25px_rgba(16,185,129,0.04)]"
+                            } rounded-3xl p-6 space-y-6 backdrop-blur-md relative overflow-hidden`}
+                          >
+                            {/* Background decor */}
+                            <div className="absolute right-0 top-0 -mr-12 -mt-12 w-48 h-48 rounded-full bg-purple-500/5 blur-3xl pointer-events-none" />
+                            
+                            {pageAudit.is_fallback && (
+                              <div className="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-4 text-xs text-amber-400 flex items-start gap-3">
+                                <AlertCircle size={16} className="shrink-0 mt-0.5 text-amber-500 animate-pulse" />
+                                <div className="space-y-1">
+                                  <p className="font-bold uppercase tracking-wider text-[10px]">Gemini API Limit &mdash; Local Resilient Mode Active</p>
+                                  <p className="text-neutral-400 leading-relaxed text-[11px]">
+                                    Due to the Gemini API free-tier quota (20 req/day limit) or permission restrictions on this workspace project, Forge is running on its <strong>Offline-Resilient Local Heuristic Engine</strong>. Audits and semantic scores are processed locally with zero-latency.
+                                  </p>
+                                </div>
+                              </div>
+                            )}
+
+                            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-white/5">
+                              <div className="flex items-center gap-3.5">
+                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                                  pageAudit.page_status === "mismatch_detected" 
+                                    ? "bg-amber-500/10 text-amber-400 border border-amber-500/20" 
+                                    : pageAudit.page_status === "fallback_active"
+                                    ? "bg-orange-500/10 text-orange-400 border border-orange-500/20"
+                                    : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                                }`}>
+                                  <ShieldCheck size={20} />
+                                </div>
+                                <div>
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <h3 className="text-sm font-bold uppercase tracking-wider text-neutral-300">Gemini Page-Level Search Quality</h3>
+                                    <span className={`text-[9px] font-bold font-mono px-2 py-0.5 rounded-full border ${
+                                      pageAudit.page_status === "mismatch_detected"
+                                        ? "bg-amber-500/10 border-amber-500/20 text-amber-400"
+                                        : pageAudit.page_status === "fallback_active"
+                                        ? "bg-orange-500/10 border-orange-500/20 text-orange-400 font-bold animate-pulse"
+                                        : "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+                                    }`}>
+                                      {pageAudit.page_status === "mismatch_detected" 
+                                        ? "MISMATCH DETECTED" 
+                                        : pageAudit.page_status === "fallback_active"
+                                        ? "FALLBACK ACTIVE"
+                                        : "OPTIMAL COVERAGE"
+                                      }
+                                    </span>
+                                  </div>
+                                  <p className="text-xs text-neutral-500 mt-1">Holistic semantic analysis of top candidates</p>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-4 self-end md:self-auto">
+                                <div className="text-right">
+                                  <p className="text-[10px] uppercase font-bold text-neutral-500 leading-none">Semantic Fit</p>
+                                  <p className="text-xl font-black font-mono text-white mt-1">{(pageAudit.overall_match_rate * 100).toFixed(0)}%</p>
+                                </div>
+                                <button
+                                  onClick={() => fetchPageStatus(subject, brand, uiRole, result?.candidates || [])}
+                                  className="w-9 h-9 rounded-xl bg-white/5 border border-white/5 flex items-center justify-center hover:bg-white/10 transition-colors text-neutral-400 hover:text-white cursor-pointer"
+                                  title="Recalculate Whole Page Audit"
+                                >
+                                  <RefreshCw size={14} className={pageAuditLoading ? "animate-spin" : ""} />
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Analysis response card */}
+                            <div className="space-y-3">
+                              <div className="flex items-start gap-2.5 bg-black/30 border border-white/5 rounded-2xl p-4">
+                                <MessageSquare size={16} className="text-neutral-500 mt-0.5 shrink-0" />
+                                <div className="space-y-1">
+                                  <p className="text-xs font-mono text-neutral-400 uppercase tracking-wider">Editorial Assessment</p>
+                                  <p className="text-sm text-neutral-200 leading-relaxed font-sans">{pageAudit.editorial_verdict}</p>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Gemini Indulgence Section */}
+                            <div className="space-y-3">
+                              <div className="flex items-center gap-2">
+                                <Sparkles size={14} className="text-purple-400 animate-pulse" />
+                                <h4 className="text-xs font-bold uppercase tracking-wider text-purple-400">Gemini Mismatch Indulgence & Parameter Tampering</h4>
+                              </div>
+                              <p className="text-xs text-neutral-400 leading-relaxed">
+                                When concept drift or keyword mismatch is identified, the Gemini engine is empowered to "indulge" and tamper with the original query parameters to bypass search limits and source alternative resources:
+                              </p>
+                              
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2">
+                                {pageAudit.indulgence_actions?.map((action: any, idx: number) => (
+                                  <div 
+                                    key={idx} 
+                                    className="bg-black/30 border border-purple-500/10 hover:border-purple-500/25 rounded-2xl p-4.5 space-y-3 transition-all flex flex-col justify-between"
+                                  >
+                                    <div className="space-y-1.5">
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-[9px] font-bold font-mono bg-purple-500/10 px-2 py-0.5 rounded text-purple-400 border border-purple-500/15">
+                                          PATHWAY {idx + 1}
+                                        </span>
+                                        {action.suggested_brand && (
+                                          <span className="text-[9px] font-mono text-neutral-400 bg-white/5 px-1.5 py-0.5 rounded">
+                                            brand: {action.suggested_brand}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <p className="text-xs text-neutral-300 font-medium leading-relaxed">"{action.reason}"</p>
+                                    </div>
+                                    <div className="pt-2.5 border-t border-white/5 flex items-center justify-between gap-2">
+                                      <span className="text-xs font-mono font-bold text-white truncate max-w-[140px] sm:max-w-[180px]" title={action.suggested_subject}>
+                                        {action.suggested_subject}
+                                      </span>
+                                      <button
+                                        onClick={() => {
+                                          setSubject(action.suggested_subject);
+                                          if (action.suggested_brand !== undefined) {
+                                            setBrand(action.suggested_brand);
+                                          }
+                                          if (action.suggested_ui_role) {
+                                            setUiRole(action.suggested_ui_role);
+                                          }
+                                          // Trigger search in next tick
+                                          setTimeout(() => {
+                                            const btn = document.getElementById("forge-search-trigger-inline") || document.getElementById("forge-search-trigger");
+                                            if (btn) btn.click();
+                                          }, 50);
+                                        }}
+                                        className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1 shadow-md shrink-0 cursor-pointer"
+                                      >
+                                        Inject & Search
+                                        <ChevronRight size={10} />
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+
+                            {/* Alternative Resources pathways */}
+                            {pageAudit.alternative_resources && pageAudit.alternative_resources.length > 0 && (
+                              <div className="pt-2.5 space-y-2 border-t border-white/5">
+                                <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-neutral-400">
+                                  <Compass size={12} />
+                                  <span>Alternative Resource Pathways</span>
+                                </div>
+                                <ul className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1 text-[11px] text-neutral-500 list-disc list-inside">
+                                  {pageAudit.alternative_resources.map((res: string, i: number) => (
+                                    <li key={i} className="leading-relaxed hover:text-neutral-400 transition-colors">
+                                      {res}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                            
+                            {/* Token Footprint Footer */}
+                            {pageAudit.usage && (
+                              <div className="flex justify-between items-center text-[9px] font-mono text-neutral-600 pt-3 border-t border-white/5">
+                                <span>AUDIT ENGINE: gemini-3.5-flash</span>
+                                <span>PROMPT: {pageAudit.usage.promptTokens}t • RESP: {pageAudit.usage.completionTokens}t • TOTAL: {pageAudit.usage.totalTokens} tokens</span>
+                              </div>
+                            )}
+                          </motion.div>
+                        ) : null}
+                      </div>
+                    )}
+
                     {loading ? (
                       /* LOADING SKELETON GRID */
                       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
@@ -798,6 +1103,17 @@ export default function App() {
                             </div>
                           ) : selectedCandidateTags ? (
                             <div className="space-y-4">
+                              {selectedCandidateTags.is_fallback && (
+                                <div className="bg-amber-500/5 border border-amber-500/10 rounded-lg p-2.5 text-[10px] text-amber-400 flex items-start gap-2">
+                                  <AlertCircle size={13} className="shrink-0 mt-0.5 text-amber-500" />
+                                  <div>
+                                    <span className="font-bold block mb-0.5 uppercase tracking-wider text-[9px]">Local Heuristic Tagging Active</span>
+                                    <span className="text-neutral-400 leading-normal">
+                                      API limit reached. Image attributes were parsed offline using local heuristic classifiers.
+                                    </span>
+                                  </div>
+                                </div>
+                              )}
                               {/* Subjects */}
                               <div className="space-y-1">
                                 <span className="text-[9px] font-bold text-neutral-500 uppercase">Recognized Subjects:</span>
@@ -854,6 +1170,122 @@ export default function App() {
                             <div className="py-4 text-center">
                               <p className="text-[10px] text-neutral-500">
                                 Click an asset to request real-time Gemini tagging.
+                              </p>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Interactive Gemini AI Image-to-Query Auditor */}
+                        <div className="border border-white/10 rounded-xl p-4 bg-neutral-900/40 space-y-4">
+                          <div className="flex items-center justify-between pb-2 border-b border-white/5">
+                            <h4 className="text-[10px] font-black uppercase tracking-wider text-neutral-400 flex items-center gap-1.5">
+                              <ShieldCheck size={12} className="text-emerald-500" /> Gemini Mismatch Audit
+                            </h4>
+                            <span className="text-[8px] font-bold text-neutral-500 bg-white/5 px-2 py-0.5 rounded">
+                              Vision Audit
+                            </span>
+                          </div>
+
+                          {candidateAuditLoading ? (
+                            <div className="py-8 text-center space-y-3">
+                              <RefreshCw className="animate-spin text-orange-500 mx-auto" size={24} />
+                              <p className="text-[10px] text-neutral-400 font-mono animate-pulse">
+                                Gemini is verifying image content against search intent...
+                              </p>
+                            </div>
+                          ) : candidateAuditError ? (
+                            <div className="py-6 text-center space-y-2">
+                              <AlertCircle className="text-red-500 mx-auto" size={24} />
+                              <p className="text-[11px] text-neutral-300 font-medium px-2">
+                                {candidateAuditError}
+                              </p>
+                            </div>
+                          ) : selectedCandidateAudit ? (
+                            <div className="space-y-4">
+                              {selectedCandidateAudit.is_fallback && (
+                                <div className="bg-amber-500/5 border border-amber-500/10 rounded-lg p-2.5 text-[10px] text-amber-400 flex items-start gap-2">
+                                  <AlertCircle size={13} className="shrink-0 mt-0.5 text-amber-500" />
+                                  <div>
+                                    <span className="font-bold block mb-0.5 uppercase tracking-wider text-[9px]">Local Heuristic Audit Active</span>
+                                    <span className="text-neutral-400 leading-normal">
+                                      API limit reached. Image verification and object maps were generated locally via heuristic term-overlap checks.
+                                    </span>
+                                  </div>
+                                </div>
+                              )}
+                              {/* Verdict Header Badge */}
+                              <div className={`p-3 rounded-xl border flex items-start gap-3 ${
+                                selectedCandidateAudit.is_mismatch 
+                                  ? "bg-red-500/10 border-red-500/20 text-red-200" 
+                                  : "bg-emerald-500/10 border-emerald-500/20 text-emerald-200"
+                              }`}>
+                                {selectedCandidateAudit.is_mismatch ? (
+                                  <AlertCircle className="text-red-400 mt-0.5 shrink-0" size={16} />
+                                ) : (
+                                  <CheckCircle2 className="text-emerald-400 mt-0.5 shrink-0" size={16} />
+                                )}
+                                <div className="space-y-1">
+                                  <p className="text-[10px] font-black uppercase tracking-widest text-neutral-400">
+                                    Audit Verdict
+                                  </p>
+                                  <p className="text-xs font-bold leading-normal">
+                                    {selectedCandidateAudit.audit_verdict}
+                                  </p>
+                                </div>
+                              </div>
+
+                              {/* Explanation Analysis */}
+                              <div className="space-y-1 bg-black/20 p-3 rounded-lg border border-white/5">
+                                <span className="text-[9px] font-bold text-neutral-500 uppercase tracking-wider block">Multimodal Analysis:</span>
+                                <p className="text-xs text-neutral-300 leading-relaxed font-sans">
+                                  {selectedCandidateAudit.explanation}
+                                </p>
+                              </div>
+
+                              {/* Detected visual elements */}
+                              {selectedCandidateAudit.detected_objects && selectedCandidateAudit.detected_objects.length > 0 && (
+                                <div className="space-y-1">
+                                  <span className="text-[9px] font-bold text-neutral-500 uppercase tracking-wider block">Detected Objects/Themes:</span>
+                                  <div className="flex flex-wrap gap-1">
+                                    {selectedCandidateAudit.detected_objects.map((obj: string) => (
+                                      <span key={obj} className="text-[9px] bg-white/5 border border-white/10 text-neutral-300 px-2 py-0.5 rounded font-mono">
+                                        {obj}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Smart Query Suggestions */}
+                              {selectedCandidateAudit.suggestions && selectedCandidateAudit.suggestions.length > 0 && (
+                                <div className="space-y-2">
+                                  <span className="text-[9px] font-bold text-neutral-500 uppercase tracking-wider block">Smart Engine Corrections:</span>
+                                  <div className="grid grid-cols-1 gap-1.5">
+                                    {selectedCandidateAudit.suggestions.map((sug: string, i: number) => (
+                                      <button
+                                        key={i}
+                                        onClick={() => {
+                                          setSubject(sug);
+                                        }}
+                                        className="text-left text-[10px] bg-neutral-950 hover:bg-orange-500/10 hover:text-orange-400 border border-white/5 hover:border-orange-500/20 rounded-lg p-2 transition-all flex items-center justify-between group"
+                                        title="Click to search this refined term"
+                                      >
+                                        <span className="text-neutral-300 group-hover:text-orange-300 font-medium truncate max-w-[85%]">
+                                          {sug}
+                                        </span>
+                                        <span className="text-[8px] font-black uppercase tracking-wider text-orange-500/70 group-hover:text-orange-400 shrink-0 font-mono flex items-center gap-0.5">
+                                          Refine <ChevronRight size={8} />
+                                        </span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="py-4 text-center">
+                              <p className="text-[10px] text-neutral-500">
+                                Click an asset to audit match accuracy.
                               </p>
                             </div>
                           )}

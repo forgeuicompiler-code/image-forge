@@ -8,12 +8,32 @@ import evaluationRoutes from "./src/lib/forge/api/evaluation.route.ts";
 import aiRoutes from "./src/lib/forge/api/ai.route.ts";
 
 const envResult = dotenv.config();
-(global as any).envResultError = envResult.error ? envResult.error.message : null;
-(global as any).envResultParsed = envResult.parsed;
+const isEnoent = envResult.error && (envResult.error as any).code === "ENOENT";
+(global as any).envResultError = envResult.error && !isEnoent ? envResult.error.message : null;
+(global as any).envResultParsed = envResult.parsed || {};
 console.log("Dotenv result:", envResult);
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+let safeFilename = "";
+try {
+  if (typeof __filename !== "undefined") {
+    safeFilename = __filename;
+  } else if (typeof import.meta !== "undefined" && import.meta.url) {
+    safeFilename = fileURLToPath(import.meta.url);
+  }
+} catch (err) {
+  // safe fallback
+}
+
+let safeDirname = process.cwd();
+try {
+  if (typeof __dirname !== "undefined") {
+    safeDirname = __dirname;
+  } else if (safeFilename) {
+    safeDirname = path.dirname(safeFilename);
+  }
+} catch (err) {
+  // safe fallback
+}
 
 async function startServer() {
   const app = express();
