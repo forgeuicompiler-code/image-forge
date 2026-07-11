@@ -7,7 +7,10 @@ import imageRoutes from "./src/lib/forge/api/images.route.ts";
 import evaluationRoutes from "./src/lib/forge/api/evaluation.route.ts";
 import aiRoutes from "./src/lib/forge/api/ai.route.ts";
 
-dotenv.config();
+const envResult = dotenv.config();
+(global as any).envResultError = envResult.error ? envResult.error.message : null;
+(global as any).envResultParsed = envResult.parsed;
+console.log("Dotenv result:", envResult);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

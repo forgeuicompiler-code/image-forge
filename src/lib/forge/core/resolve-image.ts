@@ -1,6 +1,8 @@
 import { parseContext } from "./context-parser.ts";
 import { buildQueries } from "./query-builder.ts";
 import { searchUnsplash } from "../providers/unsplash.ts";
+import { searchWikimedia } from "../providers/wikimedia.ts";
+import { searchOpenverse } from "../providers/openverse.ts";
 import { scoreCandidates } from "./scorer.ts";
 import { applyFallback } from "./fallback.ts";
 import { ImageContext, ImageConstraints, ResolveImageResponse } from "../types.ts";
@@ -21,7 +23,11 @@ export async function resolveImage(input: {
   const queries = buildQueries(context);
 
   // 3. Retrieve (Parallel search for all queries to expand pool)
-  const candidatePromises = queries.map(q => searchUnsplash(q));
+  const candidatePromises = [
+    ...queries.map(q => searchUnsplash(q)),
+    ...queries.map(q => searchWikimedia(q)),
+    ...queries.map(q => searchOpenverse(q))
+  ];
   const results = await Promise.all(candidatePromises);
   
   // Flatten and deduplicate by ID
@@ -50,13 +56,13 @@ export async function resolveImage(input: {
   const final = applyFallback(best, context, { margin, variance, candidates: sorted });
   
   // Attach top candidates for evaluation/debugging
-  final.candidates = sorted.slice(0, 5);
+  final.candidates = sorted.slice(0, 45);
   
   // Add Trace Metadata
   final.metadata.trace = {
     queries,
     candidate_count: allCandidates.length,
-    top_scores: sorted.slice(0, 5).map(c => Number((c.score || 0).toFixed(3))),
+    top_scores: sorted.slice(0, 10).map(c => Number((c.score || 0).toFixed(3))),
     decision: final.metadata.fallback_applied ? "fallback" : "direct_match"
   };
   final.metadata.variance = variance;

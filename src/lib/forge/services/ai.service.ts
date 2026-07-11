@@ -1,13 +1,23 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import firebaseConfig from "../../../../firebase-applet-config.json";
 
-const apiKey = process.env.GEMINI_API_KEY || firebaseConfig.apiKey;
-const ai = new GoogleGenAI({ apiKey });
+let aiClient: GoogleGenAI | null = null;
 
-if (!apiKey) {
-  console.warn("WARNING: No API key found for Gemini.");
-} else {
-  console.log("Gemini API key source: " + (process.env.GEMINI_API_KEY ? "env" : "config"));
+function getAI() {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === "MY_GEMINI_API_KEY" || apiKey.trim() === "") {
+    throw new Error("Gemini API key is not configured. Please add your GEMINI_API_KEY in the Settings > Secrets panel.");
+  }
+  if (!aiClient) {
+    aiClient = new GoogleGenAI({
+      apiKey: apiKey,
+      httpOptions: {
+        headers: {
+          "User-Agent": "aistudio-build",
+        }
+      }
+    });
+  }
+  return aiClient;
 }
 
 const DATASET_VERSION = "v1.2";
@@ -21,8 +31,9 @@ export interface AITags {
 }
 
 export async function tagCandidateServer(description: string): Promise<AITags> {
+  const ai = getAI();
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-3.5-flash",
     contents: `Analyze this image description and extract structured semantic tags. 
     Be objective. If a brand is mentioned but not visible, set brand to null.
     
@@ -49,8 +60,9 @@ export async function tagCandidateServer(description: string): Promise<AITags> {
 }
 
 export async function expandSearchQuery(subject: string, brand: string | null): Promise<string[]> {
+  const ai = getAI();
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-3.5-flash",
     contents: `Expand this image search subject into 3-4 highly relevant, diverse search queries for Unsplash.
     Subject: "${subject}"
     Brand: "${brand || 'None'}"

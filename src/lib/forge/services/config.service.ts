@@ -1,5 +1,4 @@
-import { db } from "../../firebase";
-import { doc, getDoc } from "firebase/firestore";
+import firebaseConfig from "../../../../firebase-applet-config.json";
 
 export interface RankingWeights {
   semantic: number;
@@ -17,21 +16,38 @@ const DEFAULT_WEIGHTS: RankingWeights = {
 
 export async function getRankingWeights(): Promise<RankingWeights> {
   try {
-    console.log("[Config] Fetching ranking weights (Client SDK)...");
-    const docRef = doc(db, "config", "ranking");
-    const docSnap = await getDoc(docRef);
+    console.log("[Config] Fetching ranking weights (REST API)...");
+    const projectId = firebaseConfig.projectId;
+    const databaseId = firebaseConfig.firestoreDatabaseId || "(default)";
+    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents/config/ranking`;
     
-    if (!docSnap.exists()) {
-      console.log("[Config] No ranking config found, using defaults.");
+    const response = await fetch(url);
+    if (!response.ok) {
+      if (response.status !== 404) {
+        console.warn(`[Config] Failed to fetch config (Status: ${response.status}). Using defaults.`);
+      }
       return DEFAULT_WEIGHTS;
     }
     
-    const data = docSnap.data()!;
+    const json = await response.json();
+    const fields = json.fields;
+    
+    if (!fields) {
+      return DEFAULT_WEIGHTS;
+    }
+    
+    const parseNumber = (field: any, defaultVal: number) => {
+      if (!field) return defaultVal;
+      if (field.doubleValue !== undefined) return Number(field.doubleValue);
+      if (field.integerValue !== undefined) return Number(field.integerValue);
+      return defaultVal;
+    };
+
     return {
-      semantic: data.semantic_weight || DEFAULT_WEIGHTS.semantic,
-      visual: data.visual_weight || DEFAULT_WEIGHTS.visual,
-      quality: data.quality_weight || DEFAULT_WEIGHTS.quality,
-      version: data.version || DEFAULT_WEIGHTS.version
+      semantic: parseNumber(fields.semantic_weight, DEFAULT_WEIGHTS.semantic),
+      visual: parseNumber(fields.visual_weight, DEFAULT_WEIGHTS.visual),
+      quality: parseNumber(fields.quality_weight, DEFAULT_WEIGHTS.quality),
+      version: fields.version?.stringValue ?? DEFAULT_WEIGHTS.version
     };
   } catch (error) {
     console.error("[Config] Failed to fetch ranking weights:", error);

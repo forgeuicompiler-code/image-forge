@@ -1,8 +1,15 @@
 import { useState, useEffect, useRef } from "react";
-import { Search, Image as ImageIcon, ShieldCheck, Zap, Info, ExternalLink, RefreshCw, BarChart3, CheckCircle2, AlertCircle, Target, Check, X, MessageSquare, LogIn, LogOut, User as UserIcon } from "lucide-react";
+import { 
+  Search, Image as ImageIcon, ShieldCheck, Zap, Info, ExternalLink, 
+  RefreshCw, BarChart3, CheckCircle2, AlertCircle, Target, Check, X, 
+  MessageSquare, LogIn, LogOut, User as UserIcon, Sparkles, Filter, 
+  SlidersHorizontal, Maximize2, ChevronRight, Heart, Grid, Compass, 
+  ThumbsUp, Download, Layers, Tag, Award, Eye
+} from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { auth, signInWithGoogle, signOut } from "./lib/firebase";
+import { auth, db, signInWithGoogle, signOut } from "./lib/firebase";
 import { onAuthStateChanged, User } from "firebase/auth";
+import { doc, setDoc } from "firebase/firestore";
 import { tagAndLogTrace } from "./services/taggingService";
 import { fetchTraces, saveVerification, VerificationLabels } from "./services/verificationService";
 
@@ -73,8 +80,8 @@ interface EvaluationData {
 export default function App() {
   const [activeTab, setActiveTab] = useState<"playground" | "evaluation" | "verification">("playground");
   const [user, setUser] = useState<User | null>(null);
-  const [subject, setSubject] = useState("Nike running shoes");
-  const [brand, setBrand] = useState("Nike");
+  const [subject, setSubject] = useState("");
+  const [brand, setBrand] = useState("");
   const [uiRole, setUiRole] = useState("hero");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ForgeResponse | null>(null);
@@ -82,8 +89,47 @@ export default function App() {
   const [evalLoading, setEvalLoading] = useState(false);
   const [evalData, setEvalData] = useState<EvaluationData | null>(null);
 
+  // Search Engine UI States
+  const [searchExecuted, setSearchExecuted] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [selectedCandidate, setSelectedCandidate] = useState<any>(null);
+  const [selectedCandidateTags, setSelectedCandidateTags] = useState<any>(null);
+  const [candidateTaggingLoading, setCandidateTaggingLoading] = useState(false);
+  const [candidateTaggingError, setCandidateTaggingError] = useState<string | null>(null);
+  const [sourceFilter, setSourceFilter] = useState<"all" | "unsplash" | "openverse" | "wikimedia">("all");
+  const [sortBy, setSortBy] = useState<"score" | "likes">("score");
+
   // Race condition protection
   const requestId = useRef(0);
+
+  useEffect(() => {
+    if (selectedCandidate) {
+      const fetchTags = async () => {
+        setCandidateTaggingLoading(true);
+        setSelectedCandidateTags(null);
+        setCandidateTaggingError(null);
+        try {
+          const response = await fetch("/api/ai/tag", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ description: selectedCandidate.description })
+          });
+          const data = await response.json();
+          if (data.success && data.tags) {
+            setSelectedCandidateTags(data.tags);
+          } else {
+            setCandidateTaggingError(data.error || "Failed to analyze candidate");
+          }
+        } catch (err: any) {
+          console.error("Error tagging candidate:", err);
+          setCandidateTaggingError(err instanceof Error ? err.message : "Error analyzing candidate");
+        } finally {
+          setCandidateTaggingLoading(false);
+        }
+      };
+      fetchTags();
+    }
+  }, [selectedCandidate]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
@@ -95,6 +141,9 @@ export default function App() {
   const resolveImage = async () => {
     const id = ++requestId.current;
     setLoading(true);
+    setSearchExecuted(true);
+    setSelectedCandidate(null);
+    setSearchError(null);
     
     try {
       const response = await fetch("/api/images/resolve", {
@@ -118,28 +167,39 @@ export default function App() {
       
       // Only update state if this is still the latest request
       if (id === requestId.current) {
-        setResult(data);
+        if (data.error) {
+          setSearchError(data.error);
+          setResult(null);
+        } else if (!data.candidates) {
+          setSearchError("No candidates returned from the engine.");
+          setResult(null);
+        } else {
+          setResult(data);
+          setSearchError(null);
 
-        // AI Tagging & Logging (Server-side Proxy)
-        if (user) {
-          const traceId = `trace-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-          const traceData = {
-            id: traceId,
-            context: { subject, brand, ui_role: uiRole },
-            selected_url: data.url,
-            decision: data.metadata.fallback_applied ? "fallback" : "direct_match",
-            reason: data.metadata.reason,
-            margin: data.metadata.margin,
-            variance: data.metadata.variance,
-            candidates: data.candidates?.slice(0, 3).map((c: any) => ({ id: c.id, score: c.score, description: c.description }))
-          };
+          // AI Tagging & Logging (Server-side Proxy)
+          if (user) {
+            const traceId = `trace-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+            const traceData = {
+              id: traceId,
+              context: { subject, brand, ui_role: uiRole },
+              selected_url: data.url,
+              decision: data.metadata?.fallback_applied ? "fallback" : "direct_match",
+              reason: data.metadata?.reason,
+              margin: data.metadata?.margin,
+              variance: data.metadata?.variance,
+              candidates: data.candidates?.slice(0, 3).map((c: any) => ({ id: c.id, score: c.score, description: c.description }))
+            };
 
-          tagAndLogTrace(traceData, data.candidates?.[0]?.description);
+            tagAndLogTrace(traceData, data.candidates?.[0]?.description);
+          }
         }
       }
-    } catch (error) {
+    } catch (error: any) {
       if (id === requestId.current) {
         console.error("Error resolving image:", error);
+        setSearchError(error instanceof Error ? error.message : "An unexpected error occurred.");
+        setResult(null);
       }
     } finally {
       if (id === requestId.current) {
@@ -198,7 +258,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (activeTab === "playground") {
+    if (activeTab === "playground" && searchExecuted) {
       resolveImage();
     }
   }, [activeTab]);
@@ -269,245 +329,551 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto p-6">
         {activeTab === "playground" ? (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-            {/* Controls */}
-            <div className="lg:col-span-4 space-y-6">
-              <section className="bg-white/5 border border-white/10 rounded-2xl p-6 space-y-6">
-                <h2 className="text-sm font-semibold uppercase tracking-wider text-white/40 flex items-center gap-2">
-                  <Search size={14} /> Semantic Context
-                </h2>
-                
+          <div className="space-y-6">
+            {!searchExecuted ? (
+              /* LANDING SCREEN: Google-style Ambient Dark Search Homepage */
+              <motion.div 
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5 }}
+                className="max-w-3xl mx-auto text-center py-16 px-4 space-y-10"
+              >
                 <div className="space-y-4">
-                  <div className="space-y-2">
-                    <label className="text-xs font-medium text-white/60">Subject</label>
-                    <input 
-                      type="text" 
+                  <div className="inline-flex items-center gap-2 px-3 py-1 bg-orange-500/10 text-orange-400 border border-orange-500/20 rounded-full text-xs font-semibold tracking-wider uppercase mb-2">
+                    <Sparkles size={12} className="animate-pulse text-orange-500" /> AI-Powered Semantic Ranking Active
+                  </div>
+                  <h1 className="text-6xl md:text-7xl font-black tracking-tighter bg-gradient-to-r from-white via-neutral-200 to-orange-400 bg-clip-text text-transparent">
+                    FORGE
+                  </h1>
+                  <p className="text-base md:text-lg text-neutral-400 max-w-xl mx-auto leading-relaxed">
+                    A unified search index over global creative assets. Enter what you need, specify a brand, and let Gemini align and rank perfect matches on demand.
+                  </p>
+                </div>
+
+                {/* Main Centered Search Panel */}
+                <div className="bg-neutral-900/60 border border-white/10 rounded-3xl p-6 md:p-8 shadow-2xl backdrop-blur-md space-y-5 text-left max-w-2xl mx-auto">
+                  <div className="relative">
+                    <Search className="absolute left-4 top-4 text-neutral-500" size={20} />
+                    <input
+                      type="text"
                       value={subject}
                       onChange={(e) => setSubject(e.target.value)}
-                      className="w-full bg-black border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-orange-500 transition-colors"
-                      placeholder="e.g. Running shoes"
+                      onKeyDown={(e) => { if (e.key === "Enter" && subject.trim()) resolveImage(); }}
+                      className="w-full bg-black/50 border border-white/10 rounded-2xl pl-12 pr-4 py-4 text-base focus:outline-none focus:border-orange-500/50 focus:ring-1 focus:ring-orange-500/20 transition-all text-white placeholder-neutral-500"
+                      placeholder="What visual are you searching for? (e.g. vintage leather boot)"
                     />
                   </div>
 
-                  <div className="space-y-2">
-                    <label className="text-xs font-medium text-white/60">Brand (Optional)</label>
-                    <input 
-                      type="text" 
-                      value={brand}
-                      onChange={(e) => setBrand(e.target.value)}
-                      className="w-full bg-black border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-orange-500 transition-colors"
-                      placeholder="e.g. Nike"
+                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-4">
+                    <div className="sm:col-span-5 space-y-1.5">
+                      <label className="text-xs font-bold uppercase tracking-wider text-neutral-400">Brand Filter (Optional)</label>
+                      <input
+                        type="text"
+                        value={brand}
+                        onChange={(e) => setBrand(e.target.value)}
+                        className="w-full bg-black/40 border border-white/5 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-orange-500/50 transition-all text-white placeholder-neutral-600"
+                        placeholder="e.g. Nike, Apple"
+                      />
+                    </div>
+                    <div className="sm:col-span-7 space-y-1.5">
+                      <label className="text-xs font-bold uppercase tracking-wider text-neutral-400">Target UI Role Fit</label>
+                      <div className="grid grid-cols-4 gap-1">
+                        {["hero", "product", "avatar", "background"].map((role) => (
+                          <button
+                            key={role}
+                            type="button"
+                            onClick={() => setUiRole(role)}
+                            className={`py-2.5 px-0.5 rounded-xl text-[10px] font-bold uppercase tracking-tight transition-all ${
+                              uiRole === role 
+                                ? "bg-orange-500 text-black font-extrabold shadow-lg shadow-orange-500/20" 
+                                : "bg-black/30 border border-white/5 text-neutral-400 hover:text-white"
+                            }`}
+                          >
+                            {role}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={resolveImage}
+                    disabled={loading || !subject.trim()}
+                    className="w-full bg-white text-black hover:bg-orange-500 hover:text-black font-black py-4 px-6 rounded-2xl tracking-wide transition-all flex items-center justify-center gap-2 shadow-xl hover:scale-[1.01] active:scale-95 disabled:opacity-30 disabled:pointer-events-none"
+                  >
+                    {loading ? <RefreshCw className="animate-spin" size={18} /> : <>Execute Semantic Engine <Sparkles size={16} /></>}
+                  </button>
+                </div>
+
+                {/* Trending Curated Suggestions */}
+                <div className="space-y-3 pt-4">
+                  <p className="text-xs text-neutral-500 font-bold uppercase tracking-widest flex items-center justify-center gap-1.5">
+                    <Compass size={12} /> Try Curated Semantic Queries
+                  </p>
+                  <div className="flex flex-wrap justify-center gap-2 max-w-xl mx-auto">
+                    {[
+                      { s: "Mechanical keyboards with glowing neon backlights", b: "", r: "product" },
+                      { s: "Cozy study room with rain tapping on window", b: "", r: "background" },
+                      { s: "Minimalist smart sports watch with leather strap", b: "Apple", r: "hero" },
+                      { s: "A corporate developer engineer looking at a screen", b: "", r: "avatar" },
+                    ].map((prompt, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => {
+                          setSubject(prompt.s);
+                          setBrand(prompt.b);
+                          setUiRole(prompt.r);
+                          setTimeout(() => {
+                            resolveImage();
+                          }, 50);
+                        }}
+                        className="px-3.5 py-2 bg-neutral-900 border border-white/5 rounded-full text-xs text-neutral-300 hover:text-white hover:bg-neutral-800 hover:border-orange-500/30 transition-all flex items-center gap-1.5"
+                      >
+                        <Search size={10} className="text-neutral-500" /> {prompt.s.length > 32 ? prompt.s.slice(0, 32) + "..." : prompt.s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </motion.div>
+            ) : (
+              /* RESULTS MODE: Google Images Style Dynamic Visual Board */
+              <div className="space-y-6">
+                {/* DOCKED INLINE SEARCH BAR */}
+                <div className="bg-neutral-900/80 border border-white/10 rounded-2xl p-4 shadow-xl backdrop-blur-md flex flex-col md:flex-row items-center gap-4">
+                  <button 
+                    onClick={() => {
+                      setSearchExecuted(false);
+                      setResult(null);
+                      setSelectedCandidate(null);
+                    }}
+                    className="p-2 bg-white/5 hover:bg-white/10 rounded-xl text-neutral-400 hover:text-white transition-colors self-stretch md:self-auto flex items-center justify-center gap-1.5 text-xs font-bold uppercase tracking-wider"
+                    title="Back to Landing Page"
+                  >
+                    <X size={16} /> Home
+                  </button>
+
+                  <div className="relative flex-1 w-full">
+                    <Search className="absolute left-3.5 top-3.5 text-neutral-500" size={16} />
+                    <input
+                      type="text"
+                      value={subject}
+                      onChange={(e) => setSubject(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter" && subject.trim()) resolveImage(); }}
+                      className="w-full bg-black/40 border border-white/5 rounded-xl pl-10 pr-4 py-3 text-sm focus:outline-none focus:border-orange-500/50 transition-all text-white placeholder-neutral-600"
+                      placeholder="Refine search subject..."
                     />
                   </div>
 
-                  <div className="space-y-2">
-                    <label className="text-xs font-medium text-white/60">UI Role</label>
-                    <div className="grid grid-cols-2 gap-2">
+                  <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+                    <div className="flex items-center gap-2 bg-black/40 border border-white/5 rounded-xl px-3 py-1.5">
+                      <span className="text-[10px] font-bold text-neutral-500 uppercase tracking-wider">Brand:</span>
+                      <input
+                        type="text"
+                        value={brand}
+                        onChange={(e) => setBrand(e.target.value)}
+                        className="bg-transparent border-none p-0 text-xs text-white focus:outline-none w-20 placeholder-neutral-700"
+                        placeholder="None"
+                      />
+                    </div>
+
+                    <div className="flex bg-black/40 border border-white/5 p-0.5 rounded-xl">
                       {["hero", "product", "avatar", "background"].map((role) => (
                         <button
                           key={role}
-                          onClick={() => setUiRole(role)}
-                          className={`px-4 py-2 rounded-lg text-xs font-medium capitalize transition-all ${
+                          onClick={() => {
+                            setUiRole(role);
+                            // We can auto-resolve when changing UI roles in the toolbar!
+                            setTimeout(() => {
+                              resolveImage();
+                            }, 50);
+                          }}
+                          className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all ${
                             uiRole === role 
-                              ? "bg-orange-500 text-black" 
-                              : "bg-white/5 text-white/60 hover:bg-white/10"
+                              ? "bg-orange-500 text-black font-extrabold" 
+                              : "text-neutral-400 hover:text-white"
                           }`}
                         >
                           {role}
                         </button>
                       ))}
                     </div>
+
+                    <button
+                      onClick={resolveImage}
+                      disabled={loading || !subject.trim()}
+                      className="bg-white hover:bg-orange-500 text-black px-5 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center gap-1.5 shadow-md disabled:opacity-30"
+                    >
+                      {loading ? <RefreshCw className="animate-spin" size={14} /> : <><RefreshCw size={14} /> Re-rank</>}
+                    </button>
                   </div>
-
-                  <button 
-                    onClick={resolveImage}
-                    disabled={loading}
-                    className="w-full bg-white text-black font-bold py-4 rounded-xl hover:bg-orange-500 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-                  >
-                    {loading ? <RefreshCw className="animate-spin" size={18} /> : "Resolve Image"}
-                  </button>
                 </div>
-              </section>
 
-              <section className="bg-orange-500/10 border border-orange-500/20 rounded-2xl p-6">
-                <div className="flex items-start gap-3">
-                  <Info className="text-orange-500 shrink-0" size={18} />
-                  <p className="text-sm text-orange-200/80 leading-relaxed">
-                    Forge uses a hierarchical fallback system. If an exact brand match isn't found, it degrades gracefully to category-level visuals while maintaining brand safety.
-                  </p>
-                </div>
-              </section>
-            </div>
-
-            {/* Preview */}
-            <div className="lg:col-span-8 space-y-6">
-              <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden min-h-[500px] flex flex-col">
-                <div className="p-4 border-b border-white/10 flex items-center justify-between bg-white/2">
+                {/* DYNAMIC GOOGLE-LIKE FILTERS BAR */}
+                <div className="flex flex-wrap items-center justify-between gap-4 py-2 border-b border-white/5">
+                  {/* Source Filters */}
                   <div className="flex items-center gap-2">
-                    <ImageIcon size={16} className="text-white/40" />
-                    <span className="text-xs font-medium text-white/60 uppercase tracking-widest">Visual Output</span>
+                    <span className="text-xs font-bold text-neutral-500 uppercase flex items-center gap-1.5">
+                      <Filter size={12} /> Providers:
+                    </span>
+                    <div className="flex items-center gap-1 bg-white/2 p-1 rounded-xl border border-white/5">
+                      {[
+                        { id: "all", label: "All Assets" },
+                        { id: "unsplash", label: "Unsplash" },
+                        { id: "wikimedia", label: "Wikimedia Commons" },
+                        { id: "openverse", label: "Openverse CC" },
+                      ].map((src) => (
+                        <button
+                          key={src.id}
+                          onClick={() => setSourceFilter(src.id as any)}
+                          className={`px-3 py-1 rounded-lg text-[10px] font-bold uppercase transition-all ${
+                            sourceFilter === src.id 
+                              ? "bg-white/10 text-white" 
+                              : "text-neutral-500 hover:text-neutral-300"
+                          }`}
+                        >
+                          {src.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                  {result && (
-                    <div className="flex items-center gap-4">
-                      <div className="flex items-center gap-1.5">
-                        <div className={`w-2 h-2 rounded-full ${result.confidence > 0.7 ? 'bg-green-500' : 'bg-yellow-500'}`} />
-                        <span className="text-[10px] font-bold uppercase text-white/40">Confidence: {(result.confidence * 100).toFixed(0)}%</span>
-                      </div>
-                      <div className="px-2 py-0.5 bg-white/10 rounded text-[10px] font-bold uppercase text-white/60">
-                        Match: {result.match_level}
+
+                  {/* Right Alignment Controls (Sorting and stats) */}
+                  <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-neutral-500 uppercase flex items-center gap-1">
+                        <SlidersHorizontal size={12} /> Sort by:
+                      </span>
+                      <div className="flex bg-white/2 p-0.5 rounded-lg border border-white/5">
+                        <button
+                          onClick={() => setSortBy("score")}
+                          className={`px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider ${sortBy === "score" ? "bg-orange-500/10 text-orange-400 font-extrabold" : "text-neutral-500 hover:text-neutral-300"}`}
+                        >
+                          Semantic Match
+                        </button>
+                        <button
+                          onClick={() => setSortBy("likes")}
+                          className={`px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider ${sortBy === "likes" ? "bg-orange-500/10 text-orange-400 font-extrabold" : "text-neutral-500 hover:text-neutral-300"}`}
+                        >
+                          Likes Count
+                        </button>
                       </div>
                     </div>
-                  )}
+
+                    {result && (
+                      <span className="text-[10px] font-mono text-neutral-500 bg-white/5 px-2.5 py-1 rounded-full border border-white/5">
+                        {result.candidates?.length || 0} hits • fallback: {result.metadata?.fallback_applied ? "active" : "inactive"}
+                      </span>
+                    )}
+                  </div>
                 </div>
 
-                <div className="flex-1 relative flex items-center justify-center p-8">
-                  <AnimatePresence mode="wait">
+                {/* SEARCH RESULTS LAYOUT: GRID & DETAIL SPLIT PANEL */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                  {/* LEFT COLUMN: MULTIPLE IMAGE SEARCH RESULTS */}
+                  <div className={`${selectedCandidate ? "lg:col-span-8" : "lg:col-span-12"} space-y-4 transition-all duration-300`}>
                     {loading ? (
-                      <motion.div 
-                        key="loading"
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        className="flex flex-col items-center gap-4"
+                      /* LOADING SKELETON GRID */
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                        {Array.from({ length: 15 }).map((_, idx) => (
+                          <div key={idx} className="aspect-square bg-neutral-900 border border-white/5 rounded-2xl animate-pulse flex items-center justify-center">
+                            <ImageIcon className="text-neutral-800 animate-bounce" size={24} />
+                          </div>
+                        ))}
+                      </div>
+                    ) : searchError ? (
+                      /* SEARCH ERROR SCREEN */
+                      <div className="py-20 text-center border border-dashed border-red-500/20 bg-red-500/5 rounded-2xl space-y-4">
+                        <AlertCircle className="text-red-500 mx-auto" size={48} />
+                        <h3 className="text-lg font-bold text-red-400">Search Engine Error</h3>
+                        <p className="text-sm text-neutral-400 max-w-md mx-auto px-4 leading-relaxed">
+                          {searchError}
+                        </p>
+                        {searchError.toLowerCase().includes("api key") && (
+                          <p className="text-xs text-neutral-500 max-w-sm mx-auto">
+                            Please check that your <strong>GEMINI_API_KEY</strong> is set and active in your workspace <strong>Settings &gt; Secrets</strong>.
+                          </p>
+                        )}
+                      </div>
+                    ) : !result || !result.candidates || result.candidates.length === 0 ? (
+                      /* NO RESULTS SCREEN */
+                      <div className="py-20 text-center border border-dashed border-white/10 rounded-2xl space-y-4">
+                        <AlertCircle className="text-neutral-500 mx-auto" size={48} />
+                        <h3 className="text-lg font-bold">No Semantic Candidates Found</h3>
+                        <p className="text-sm text-neutral-500 max-w-sm mx-auto">
+                          Try searching for a broader term or check your internet connection. Some providers may be throttled.
+                        </p>
+                      </div>
+                    ) : (
+                      /* IMAGES RESULTS GRID (Google-Images Style) */
+                      <div className={`grid grid-cols-2 sm:grid-cols-3 ${selectedCandidate ? "md:grid-cols-3 lg:grid-cols-4" : "md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"} gap-3`}>
+                        {result.candidates
+                          .filter(c => {
+                            if (sourceFilter === "all") return true;
+                            return c.source.toLowerCase() === sourceFilter.toLowerCase();
+                          })
+                          .sort((a, b) => {
+                            if (sortBy === "likes") return (b.likes || 0) - (a.likes || 0);
+                            return (b.score || 0) - (a.score || 0);
+                          })
+                          .map((img, index) => {
+                            const isSelected = selectedCandidate?.id === img.id;
+                            const isWinner = img.url === result.url;
+
+                            return (
+                              <motion.div
+                                key={img.id}
+                                layoutId={`card-${img.id}`}
+                                onClick={() => setSelectedCandidate(img)}
+                                whileHover={{ scale: 1.02 }}
+                                whileTap={{ scale: 0.98 }}
+                                className={`relative group cursor-pointer overflow-hidden rounded-xl bg-neutral-900/60 border transition-all ${
+                                  isSelected 
+                                    ? "border-orange-500 ring-2 ring-orange-500/20" 
+                                    : "border-white/5 hover:border-white/20"
+                                }`}
+                              >
+                                {/* Candidate Aspect Wrapper based on UI role */}
+                                <div className={`w-full relative bg-neutral-950 overflow-hidden ${
+                                  uiRole === 'avatar' 
+                                    ? 'aspect-square rounded-full mx-auto max-w-[85%]' 
+                                    : uiRole === 'hero' 
+                                      ? 'aspect-video' 
+                                      : 'aspect-square'
+                                }`}>
+                                  <img
+                                    src={img.url}
+                                    alt={img.description}
+                                    className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                                    referrerPolicy="no-referrer"
+                                    loading="lazy"
+                                  />
+
+                                  {/* Score Badge (Top Left) */}
+                                  <div className="absolute top-2 left-2 flex items-center gap-1 px-2 py-0.5 bg-black/70 backdrop-blur-md rounded text-[9px] font-extrabold text-orange-400 border border-orange-500/20">
+                                    <Target size={8} />
+                                    <span>{(img.score ? (img.score * 100).toFixed(0) : "N/A")}%</span>
+                                  </div>
+
+                                  {/* TOP RESOLVED MATCH Badge (Top Right) */}
+                                  {isWinner && (
+                                    <div className="absolute top-2 right-2 flex items-center gap-0.5 px-2 py-0.5 bg-amber-500 text-black rounded text-[8px] font-black uppercase tracking-wider shadow-lg shadow-amber-500/20">
+                                      <Award size={8} /> Win
+                                    </div>
+                                  )}
+
+                                  {/* Source provider tag bottom left on card */}
+                                  <span className={`absolute bottom-2 left-2 text-[8px] font-black uppercase px-1.5 py-0.5 rounded backdrop-blur-md ${
+                                    img.source === 'unsplash' ? 'bg-indigo-500/20 text-indigo-300' :
+                                    img.source === 'wikimedia' ? 'bg-green-500/20 text-green-300' :
+                                    'bg-rose-500/20 text-rose-300'
+                                  }`}>
+                                    {img.source}
+                                  </span>
+                                </div>
+
+                                {/* Metadata Info Box */}
+                                <div className="p-2 space-y-0.5 bg-black/40 border-t border-white/5">
+                                  <p className="text-[11px] font-bold text-neutral-200 truncate pr-4">
+                                    {img.description || "Image Candidate"}
+                                  </p>
+                                  <div className="flex items-center justify-between text-[9px] text-neutral-500">
+                                    <span className="truncate max-w-[70%]">@{img.attribution.photographer || "Creator"}</span>
+                                    <span className="font-mono">{img.width}x{img.height}</span>
+                                  </div>
+                                </div>
+                              </motion.div>
+                            );
+                          })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* RIGHT COLUMN: DETAILED GOOGLE IMAGES STYLE INSPECTOR SIDEBAR */}
+                  <AnimatePresence>
+                    {selectedCandidate && (
+                      <motion.div
+                        initial={{ opacity: 0, x: 50, scale: 0.98 }}
+                        animate={{ opacity: 1, x: 0, scale: 1 }}
+                        exit={{ opacity: 0, x: 50, scale: 0.98 }}
+                        transition={{ type: "spring", stiffness: 300, damping: 25 }}
+                        className="lg:col-span-4 bg-neutral-950 border border-white/10 rounded-2xl p-5 sticky top-6 max-h-[85vh] overflow-y-auto space-y-6 shadow-2xl"
                       >
-                        <RefreshCw className="animate-spin text-orange-500" size={48} />
-                        <p className="text-sm text-white/40 font-mono">Resolving semantic intent...</p>
-                      </motion.div>
-                    ) : result ? (
-                      <motion.div 
-                        key="result"
-                        initial={{ opacity: 0, scale: 0.95 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        className="w-full h-full flex flex-col items-center justify-center gap-6"
-                      >
-                        <div className={`relative group overflow-hidden border border-white/10 shadow-2xl ${
-                          uiRole === 'avatar' 
-                            ? 'w-64 h-64 rounded-full' 
-                            : uiRole === 'hero'
-                              ? 'w-full max-w-2xl aspect-video rounded-2xl'
-                              : 'w-full max-w-md aspect-square rounded-2xl'
-                        }`}>
-                          <img 
-                            src={result.url} 
-                            alt={result.metadata.alt_text}
-                            className="w-full h-full object-cover"
-                            referrerPolicy="no-referrer"
-                          />
-                          {result.metadata.fallback_applied && (
-                            <div className="absolute top-4 right-4 px-3 py-1 bg-black/60 backdrop-blur-md border border-white/10 rounded-full text-[10px] font-bold uppercase tracking-wider">
-                              Fallback Applied
+                        {/* Detail Header Controls */}
+                        <div className="flex items-center justify-between pb-3 border-b border-white/5">
+                          <h3 className="text-xs font-extrabold uppercase tracking-widest text-neutral-400 flex items-center gap-1.5">
+                            <Eye size={12} className="text-orange-500" /> Asset Inspector
+                          </h3>
+                          <button
+                            onClick={() => setSelectedCandidate(null)}
+                            className="p-1 hover:bg-white/10 rounded-lg text-neutral-500 hover:text-white transition-colors"
+                            title="Close Inspector"
+                          >
+                            <X size={18} />
+                          </button>
+                        </div>
+
+                        {/* HD Preview Container */}
+                        <div className="space-y-3">
+                          <div className={`relative overflow-hidden bg-black border border-white/10 ${
+                            uiRole === 'avatar' 
+                              ? 'aspect-square rounded-full mx-auto max-w-[75%]' 
+                              : uiRole === 'hero' 
+                                ? 'aspect-video rounded-xl' 
+                                : 'aspect-square rounded-xl'
+                          }`}>
+                            <img
+                              src={selectedCandidate.url}
+                              alt={selectedCandidate.description}
+                              className="w-full h-full object-cover"
+                              referrerPolicy="no-referrer"
+                            />
+                            {selectedCandidate.url === result?.url && (
+                              <div className="absolute bottom-3 right-3 px-2.5 py-1 bg-amber-500 text-black text-[9px] font-black uppercase rounded shadow-lg flex items-center gap-1">
+                                <Award size={10} /> Golden Resolved Choice
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex items-center justify-between text-xs text-neutral-400 bg-white/2 px-3 py-2 rounded-xl border border-white/5">
+                            <span className="font-medium truncate">By {selectedCandidate.attribution.photographer}</span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-mono">{selectedCandidate.width} × {selectedCandidate.height}</span>
+                              <a 
+                                href={selectedCandidate.attribution.license_url} 
+                                target="_blank" 
+                                rel="noreferrer" 
+                                className="text-neutral-400 hover:text-white flex items-center gap-1"
+                              >
+                                <ExternalLink size={12} />
+                              </a>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Match Status Cards Grid */}
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="bg-neutral-900 border border-white/5 rounded-xl p-3 text-center space-y-1">
+                            <p className="text-[9px] font-bold text-neutral-500 uppercase tracking-widest">Semantic Rank</p>
+                            <p className="text-xl font-black text-orange-400">
+                              {selectedCandidate.score ? `${(selectedCandidate.score * 100).toFixed(1)}%` : "N/A"}
+                            </p>
+                          </div>
+                          <div className="bg-neutral-900 border border-white/5 rounded-xl p-3 text-center space-y-1">
+                            <p className="text-[9px] font-bold text-neutral-500 uppercase tracking-widest">Sourced Index</p>
+                            <p className="text-xs font-black uppercase text-indigo-400 py-1">
+                              {selectedCandidate.source}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Interactive Gemini AI Semantic Tagging Report */}
+                        <div className="border border-white/10 rounded-xl p-4 bg-neutral-900/40 space-y-4">
+                          <div className="flex items-center justify-between pb-2 border-b border-white/5">
+                            <h4 className="text-[10px] font-black uppercase tracking-wider text-neutral-400 flex items-center gap-1.5">
+                              <Sparkles size={12} className="text-orange-500" /> Real-Time Gemini Verification
+                            </h4>
+                            <span className="text-[8px] font-bold text-neutral-500 bg-white/5 px-2 py-0.5 rounded">
+                              Live Tagging
+                            </span>
+                          </div>
+
+                          {candidateTaggingLoading ? (
+                            <div className="py-8 text-center space-y-3">
+                              <RefreshCw className="animate-spin text-orange-500 mx-auto" size={24} />
+                              <p className="text-[10px] text-neutral-400 font-mono animate-pulse">
+                                Gemini is analyzing subjects & safety...
+                              </p>
+                            </div>
+                          ) : candidateTaggingError ? (
+                            <div className="py-6 text-center space-y-3">
+                              <AlertCircle className="text-orange-500 mx-auto" size={24} />
+                              <p className="text-[11px] text-neutral-300 font-medium px-2">
+                                {candidateTaggingError}
+                              </p>
+                              {candidateTaggingError.toLowerCase().includes("api key") && (
+                                <p className="text-[9px] text-neutral-500 max-w-[220px] mx-auto leading-normal">
+                                  You can add your key in the <strong>Settings &gt; Secrets</strong> panel of the AI Studio workspace.
+                                </p>
+                              )}
+                            </div>
+                          ) : selectedCandidateTags ? (
+                            <div className="space-y-4">
+                              {/* Subjects */}
+                              <div className="space-y-1">
+                                <span className="text-[9px] font-bold text-neutral-500 uppercase">Recognized Subjects:</span>
+                                <div className="flex flex-wrap gap-1">
+                                  {selectedCandidateTags.subject && selectedCandidateTags.subject.length > 0 ? (
+                                    selectedCandidateTags.subject.map((s: string) => (
+                                      <span key={s} className="text-[9px] bg-white/5 border border-white/10 text-neutral-300 px-2 py-0.5 rounded">
+                                        {s}
+                                      </span>
+                                    ))
+                                  ) : (
+                                    <span className="text-[9px] text-neutral-600">None detected</span>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Brand Security */}
+                              <div className="flex items-center justify-between bg-black/40 p-2.5 rounded-lg border border-white/5">
+                                <span className="text-[9px] font-bold text-neutral-500 uppercase">Visible Brand Logo:</span>
+                                <span className={`text-[10px] font-black px-2 py-0.5 rounded ${
+                                  selectedCandidateTags.brand 
+                                    ? "bg-blue-500/10 text-blue-400" 
+                                    : "bg-green-500/10 text-green-400"
+                                }`}>
+                                  {selectedCandidateTags.brand || "Brand Safe"}
+                                </span>
+                              </div>
+
+                              {/* UI Fitness Roles */}
+                              <div className="space-y-1">
+                                <span className="text-[9px] font-bold text-neutral-500 uppercase">Recommended UI Fits:</span>
+                                <div className="flex flex-wrap gap-1">
+                                  {selectedCandidateTags.ui_role_fit?.map((role: string) => (
+                                    <span key={role} className="text-[9px] bg-orange-500/10 text-orange-400 px-2 py-0.5 rounded font-medium">
+                                      {role}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+
+                              {/* Composition layout notes */}
+                              <div className="space-y-1.5">
+                                <span className="text-[9px] font-bold text-neutral-500 uppercase">Visual Composition:</span>
+                                <div className="flex flex-wrap gap-1">
+                                  {selectedCandidateTags.composition?.map((comp: string) => (
+                                    <span key={comp} className="text-[9px] text-neutral-400 bg-white/2 border border-white/5 px-2 py-0.5 rounded font-medium">
+                                      {comp}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="py-4 text-center">
+                              <p className="text-[10px] text-neutral-500">
+                                Click an asset to request real-time Gemini tagging.
+                              </p>
                             </div>
                           )}
                         </div>
 
-                        {result.attribution && (
-                          <div className="flex items-center gap-2 text-xs text-white/40">
-                            <span>Photo by {result.attribution.photographer} on {result.attribution.service}</span>
-                            <a href={result.attribution.license_url} target="_blank" rel="noreferrer" className="hover:text-white">
-                              <ExternalLink size={12} />
-                            </a>
-                          </div>
-                        )}
+                        {/* Download Original and attribution */}
+                        <a
+                          href={selectedCandidate.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="w-full bg-white text-black hover:bg-orange-500 hover:text-black font-extrabold py-3 px-4 rounded-xl text-xs tracking-wider transition-all flex items-center justify-center gap-2"
+                        >
+                          <Download size={14} /> Open Original Full-Res Image
+                        </a>
                       </motion.div>
-                    ) : null}
+                    )}
                   </AnimatePresence>
                 </div>
               </div>
-
-              {/* Metadata Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-                  <p className="text-[10px] font-bold text-white/30 uppercase mb-1">Match Level</p>
-                  <p className="text-sm font-medium capitalize">{result?.match_level || "---"}</p>
-                </div>
-                <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-                  <p className="text-[10px] font-bold text-white/30 uppercase mb-1">Margin</p>
-                  <p className="text-sm font-mono">{result?.metadata.margin !== undefined ? `${(result.metadata.margin * 100).toFixed(1)}%` : "---"}</p>
-                </div>
-                <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-                  <p className="text-[10px] font-bold text-white/30 uppercase mb-1">Contribution</p>
-                  <div className="flex gap-2 mt-1">
-                    {result?.metadata.contribution ? (
-                      <>
-                        <span className="text-[9px] bg-white/10 px-1 rounded" title="Semantic">S: {(result.metadata.contribution.semantic * 100).toFixed(0)}%</span>
-                        <span className="text-[9px] bg-white/10 px-1 rounded" title="Visual">V: {(result.metadata.contribution.visual * 100).toFixed(0)}%</span>
-                        <span className="text-[9px] bg-white/10 px-1 rounded" title="Quality">Q: {(result.metadata.contribution.quality * 100).toFixed(0)}%</span>
-                      </>
-                    ) : "---"}
-                  </div>
-                </div>
-                <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-                  <p className="text-[10px] font-bold text-white/30 uppercase mb-1">
-                    {result?.metadata.fallback_applied ? "Fallback Reason" : "Confidence"}
-                  </p>
-                  <p className={`text-sm font-medium ${result?.metadata.fallback_applied ? "text-orange-400" : "text-green-500"}`}>
-                    {result?.metadata.fallback_applied 
-                      ? (result.metadata.reason?.replace("_", " ") || "low signal")
-                      : `${(result?.confidence * 100).toFixed(1)}%`
-                    }
-                  </p>
-                </div>
-              </div>
-
-              {/* Semantic Analysis Report */}
-              <AnimatePresence>
-                {result?.semantic_report && (
-                  <motion.section 
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="bg-white/5 border border-white/10 rounded-2xl p-6 space-y-6"
-                  >
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-sm font-bold uppercase tracking-widest text-white/40 flex items-center gap-2">
-                        <BarChart3 size={14} /> Real-Time Semantic Analysis
-                      </h3>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] font-bold text-white/30 uppercase">AI Confidence</span>
-                        <div className="w-24 bg-white/10 h-1.5 rounded-full overflow-hidden">
-                          <div 
-                            className="bg-orange-500 h-full" 
-                            style={{ width: `${result.semantic_report.confidence * 100}%` }} 
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                      <div className="space-y-2">
-                        <p className="text-[10px] font-bold text-white/30 uppercase">Detected Subjects</p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {result.semantic_report.subject.map(s => (
-                            <span key={s} className="px-2 py-0.5 bg-white/10 rounded text-[10px] font-medium">{s}</span>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="space-y-2">
-                        <p className="text-[10px] font-bold text-white/30 uppercase">Brand Detection</p>
-                        <div className={`px-3 py-1 rounded-lg text-xs font-bold inline-block ${result.semantic_report.brand ? 'bg-blue-500/20 text-blue-400' : 'bg-white/5 text-white/40'}`}>
-                          {result.semantic_report.brand || "No brand visible"}
-                        </div>
-                      </div>
-                      <div className="space-y-2">
-                        <p className="text-[10px] font-bold text-white/30 uppercase">UI Role Fit</p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {result.semantic_report.ui_role_fit.map(role => (
-                            <span key={role} className="px-2 py-0.5 bg-orange-500/20 text-orange-400 rounded text-[10px] font-medium">{role}</span>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="space-y-2">
-                        <p className="text-[10px] font-bold text-white/30 uppercase">Visual Composition</p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {result.semantic_report.composition.map(c => (
-                            <span key={c} className="px-2 py-0.5 bg-white/5 text-white/60 rounded text-[10px] font-medium">{c}</span>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  </motion.section>
-                )}
-              </AnimatePresence>
-            </div>
+            )}
           </div>
         ) : (
           <div className="space-y-8">
@@ -717,8 +1083,12 @@ function VerificationTab({ user }: { user: User | null }) {
   };
 
   useEffect(() => {
-    loadTraces();
-  }, []);
+    if (user) {
+      loadTraces();
+    } else {
+      setTraces([]);
+    }
+  }, [user]);
 
   const handleVerify = async (traceId: string, quickLabels?: VerificationLabels) => {
     if (!user) {

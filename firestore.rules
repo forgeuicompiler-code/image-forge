@@ -81,7 +81,7 @@ service cloud.firestore {
     }
 
     function isValidVerification(data) {
-      let allowedFields = ['trace_id', 'timestamp', 'labels', 'uid', 'user_email', 'disagreement', 'server_timestamp'];
+      let allowedFields = ['trace_id', 'timestamp', 'labels', 'uid', 'user_email', 'disagreement', 'server_timestamp', 'ai_tags_snapshot', 'has_disagreement'];
       return data.keys().hasAll(['trace_id', 'timestamp', 'labels', 'uid']) &&
              data.keys().hasOnly(allowedFields) &&
              data.trace_id is string &&

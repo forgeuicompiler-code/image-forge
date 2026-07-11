@@ -41,7 +41,7 @@ export async function tagAndLogTrace(traceData: any, description?: string) {
       const traceRef = doc(db, path, traceData.id);
       await setDoc(traceRef, {
         ...traceData,
-        ai_tags,
+        ai_tags: ai_tags || null,
         timestamp: new Date().toISOString(),
         server_timestamp: serverTimestamp(),
         logged_by: user.email,

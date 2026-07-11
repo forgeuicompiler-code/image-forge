@@ -5,8 +5,8 @@ export async function searchUnsplash(query: string): Promise<CandidateImage[]> {
   const apiKey = process.env.UNSPLASH_ACCESS_KEY;
 
   if (!apiKey) {
-    console.warn("UNSPLASH_ACCESS_KEY not found. Returning mock data.");
-    return getMockData(query);
+    console.warn("UNSPLASH_ACCESS_KEY not found. Skipping Unsplash search.");
+    return [];
   }
 
   try {
