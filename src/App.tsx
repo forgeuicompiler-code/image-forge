@@ -108,7 +108,12 @@ export default function App() {
   const [pageAuditError, setPageAuditError] = useState<string | null>(null);
   const [accumulatedTokens, setAccumulatedTokens] = useState<number>(0);
 
-  const fetchPageStatus = async (currentSubject: string, currentBrand: string, currentRole: string, currentCandidates: any[]) => {
+  // Client-side session memoization cache for identical keywords & parameters
+  const [sessionCache, setSessionCache] = useState<Record<string, { result: ForgeResponse; pageAudit: any }>>({});
+  const [isLoadedFromCache, setIsLoadedFromCache] = useState(false);
+  const [conservedCalls, setConservedCalls] = useState(0);
+
+  const fetchPageStatus = async (currentSubject: string, currentBrand: string, currentRole: string, currentCandidates: any[], cacheKey?: string) => {
     if (!currentCandidates || currentCandidates.length === 0) return;
     setPageAuditLoading(true);
     setPageAudit(null);
@@ -134,6 +139,15 @@ export default function App() {
         setPageAudit(data.report);
         if (data.report.usage) {
           setAccumulatedTokens(prev => prev + data.report.usage.totalTokens);
+        }
+        if (cacheKey) {
+          setSessionCache(prev => ({
+            ...prev,
+            [cacheKey]: {
+              ...prev[cacheKey],
+              pageAudit: data.report
+            }
+          }));
         }
       } else {
         setPageAuditError(data.error || "Failed to generate page-level audit.");
@@ -236,6 +250,31 @@ export default function App() {
   }, []);
 
   const resolveImage = async () => {
+    const cacheKey = `${subject.trim().toLowerCase()}|${brand.trim().toLowerCase()}|${uiRole}`;
+    
+    // Check client-side session memoization cache
+    if (sessionCache[cacheKey]) {
+      const id = ++requestId.current;
+      setLoading(true);
+      setSearchExecuted(true);
+      setSelectedCandidate(null);
+      setSearchError(null);
+      setIsLoadedFromCache(true);
+      setConservedCalls(prev => prev + 1);
+      
+      // Add a tiny UI transition delay to keep experience natural
+      await new Promise(resolve => setTimeout(resolve, 350));
+      
+      if (id === requestId.current) {
+        const cached = sessionCache[cacheKey];
+        setResult(cached.result);
+        setPageAudit(cached.pageAudit);
+        setLoading(false);
+      }
+      return;
+    }
+    
+    setIsLoadedFromCache(false);
     const id = ++requestId.current;
     setLoading(true);
     setSearchExecuted(true);
@@ -274,8 +313,14 @@ export default function App() {
           setResult(data);
           setSearchError(null);
           
+          // Memoize initial resolution result
+          setSessionCache(prev => ({
+            ...prev,
+            [cacheKey]: { result: data, pageAudit: null }
+          }));
+          
           // Trigger Page Status & Indulgence Audit
-          fetchPageStatus(subject, brand, uiRole, data.candidates || []);
+          fetchPageStatus(subject, brand, uiRole, data.candidates || [], cacheKey);
 
           // AI Tagging & Logging (Server-side Proxy)
           if (user) {
@@ -385,6 +430,17 @@ export default function App() {
               >
                 <Sparkles size={11} className="text-purple-400" />
                 <span className="font-bold">{accumulatedTokens.toLocaleString()} TOKENS</span>
+              </motion.div>
+            )}
+            {conservedCalls > 0 && (
+              <motion.div 
+                initial={{ scale: 0.8, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                className="hidden md:flex items-center gap-1.5 px-3.5 py-1 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-full text-[10px] font-mono shadow-[0_0_15px_rgba(16,185,129,0.15)]"
+                title="Total backend API calls saved in this session through client-side memoization"
+              >
+                <Zap size={11} className="text-emerald-400 fill-current animate-pulse" />
+                <span className="font-bold">{conservedCalls} SAVED CALLS (QUOTA CONSERVED)</span>
               </motion.div>
             )}
           </div>
@@ -651,7 +707,27 @@ export default function App() {
                   </div>
 
                   {/* Right Alignment Controls (Sorting and stats) */}
-                  <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-4 flex-wrap">
+                    {isLoadedFromCache && (
+                      <span className="text-[10px] font-extrabold font-mono text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20 flex items-center gap-1 animate-pulse shadow-[0_0_12px_rgba(16,185,129,0.1)]">
+                        <Zap size={10} className="fill-current" /> MEMOIZED CACHE MATCH
+                      </span>
+                    )}
+
+                    {Object.keys(sessionCache).length > 0 && (
+                      <button
+                        onClick={() => {
+                          setSessionCache({});
+                          setConservedCalls(0);
+                          setIsLoadedFromCache(false);
+                        }}
+                        className="text-[9px] font-bold uppercase tracking-wider text-neutral-400 hover:text-red-400 bg-red-500/5 hover:bg-red-500/10 border border-red-500/10 px-2.5 py-1 rounded-lg transition-all flex items-center gap-1 cursor-pointer"
+                        title="Reset client-side session memoization cache and counters"
+                      >
+                        <X size={10} /> Clear Cache ({Object.keys(sessionCache).length})
+                      </button>
+                    )}
+
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-bold text-neutral-500 uppercase flex items-center gap-1">
                         <SlidersHorizontal size={12} /> Sort by:

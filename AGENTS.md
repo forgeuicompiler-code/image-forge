@@ -61,8 +61,11 @@ To prevent file-path typos or modular overlaps, follow this exact layout:
 
 ## 3. High-Priority Directives (The Absolute Rules)
 
-### Rule A: Mandatory Code Review Alignment
-Before finalizing any turn or committing any change, you MUST self-audit your code against the **[CODE_REVIEW.md](./CODE_REVIEW.md)** guidelines. This includes checking React 19 hook dependency arrays, checking esbuild bundles for path resolution, and validating CSS classes for Tailwind v4 compatibility.
+### Rule A: Mandatory Code Review Alignment & Verification
+- **Audit Against Code Review Checklist**: Before finalizing any turn or committing any change, you MUST self-audit your code against the **[CODE_REVIEW.md](./CODE_REVIEW.md)** guidelines. This includes checking React 19 hook dependency arrays, checking esbuild bundles for path resolution, and validating CSS classes for Tailwind v4 compatibility.
+- **Diff-Based Review & Active Probing**: Code reviews (such as any `/codereview` requests or workflows) MUST be performed on the active file diffs since the last stable commit. They must be actively probed and executed rather than merely reading the syntax or code structure.
+- **Deep Connection & Testing Checks**: Reviews must look beyond compile-time correctness to identify integration defects, missing connection stubs, or testing gaps. Implement negative gating tests (tests that intentionally assert failure or fallback paths under extreme conditions) to ensure absolute system resilience.
+- **Strengthen Approach via External/Community Wisdom**: Always strengthen your technical decisions and troubleshooting by searching official documentations, community blogs, and trusted industry sources.
 
 ### Rule B: API Secret Isolation & Proxy Routing
 - **Never expose `GEMINI_API_KEY` to the client browser.**
